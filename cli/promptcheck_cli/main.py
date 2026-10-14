@@ -1,6 +1,6 @@
 import httpx
-from rich.console import Console
 import typer
+from rich.console import Console
 
 app = typer.Typer(
     name="promptcheck",
@@ -34,7 +34,9 @@ def ping(
             console.print("[bold green][OK] Success:[/bold green] PromptCheck backend is healthy!")
             console.print(response.json())
         else:
-            console.print(f"[bold red][FAIL] Unhealthy status code:[/bold red] {response.status_code}")
+            console.print(
+                f"[bold red][FAIL] Unhealthy status code:[/bold red] {response.status_code}"
+            )
             console.print(response.text)
             raise typer.Exit(code=1)
     except Exception as exc:
