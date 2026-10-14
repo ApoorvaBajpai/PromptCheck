@@ -97,6 +97,13 @@ def update_project(
         project.name = project_update.name
     if project_update.description is not None:
         project.description = project_update.description
+    if project_update.gemini_api_key is not None:
+        if project_update.gemini_api_key.strip():
+            project.encrypted_gemini_api_key = encrypt_api_key(
+                project_update.gemini_api_key.strip()
+            )
+        else:
+            project.encrypted_gemini_api_key = None
 
     db.commit()
     db.refresh(project)

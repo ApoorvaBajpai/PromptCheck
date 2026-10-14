@@ -81,11 +81,14 @@ export default function Home() {
     return <LoginPage />;
   }
 
+  const [dashboardTab, setDashboardTab] = useState<"prompts" | "tests" | "runs" | "settings">("prompts");
+
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col text-slate-100">
       <Navbar
         currentProject={selectedProject}
         onSelectProjectList={() => setSelectedProjectId(null)}
+        onOpenSettings={() => setDashboardTab("settings")}
       />
 
       <main className="flex-1 pb-16">
@@ -93,7 +96,10 @@ export default function Home() {
           <ProjectList
             projects={projects}
             isLoading={isProjectsLoading}
-            onSelectProject={(p) => setSelectedProjectId(p.id)}
+            onSelectProject={(p) => {
+              setSelectedProjectId(p.id);
+              setDashboardTab("prompts");
+            }}
             onRefresh={refetchProjects}
           />
         ) : (
@@ -103,6 +109,8 @@ export default function Home() {
             testCases={testCases}
             runs={runs}
             isLoading={isPromptsLoading || isTestsLoading || isRunsLoading}
+            activeTab={dashboardTab}
+            onTabChange={setDashboardTab}
             onRefresh={handleRefreshAll}
             onBackToProjects={() => setSelectedProjectId(null)}
           />

@@ -16,6 +16,11 @@ export function ApiKeySettings({ project, onRefresh }: ApiKeySettingsProps) {
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [hasKey, setHasKey] = React.useState(project.has_api_key);
+
+  React.useEffect(() => {
+    setHasKey(project.has_api_key);
+  }, [project.has_api_key]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,7 +28,8 @@ export function ApiKeySettings({ project, onRefresh }: ApiKeySettingsProps) {
 
     setIsSaving(true);
     try {
-      await api.updateProject(project.id, { gemini_api_key: apiKey.trim() });
+      await api.setProjectApiKey(project.id, apiKey.trim());
+      setHasKey(true);
       showToast("Gemini API key encrypted and saved successfully!", "success");
       setApiKey("");
       onRefresh();
@@ -44,7 +50,7 @@ export function ApiKeySettings({ project, onRefresh }: ApiKeySettingsProps) {
             <h3 className="text-base font-bold text-white">Gemini API Key Settings</h3>
           </div>
 
-          {project.has_api_key ? (
+          {hasKey ? (
             <span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 bg-emerald-950/60 border border-emerald-800 px-3 py-1 rounded-full">
               <CheckCircle2 className="w-3.5 h-3.5" />
               <span>Configured & Encrypted</span>

@@ -27,6 +27,8 @@ interface ProjectDashboardProps {
   testCases: TestCase[];
   runs: Run[];
   isLoading: boolean;
+  activeTab?: "prompts" | "tests" | "runs" | "settings";
+  onTabChange?: (tab: "prompts" | "tests" | "runs" | "settings") => void;
   onRefresh: () => void;
   onBackToProjects: () => void;
 }
@@ -37,10 +39,14 @@ export function ProjectDashboard({
   testCases,
   runs,
   isLoading,
+  activeTab: controlledTab,
+  onTabChange,
   onRefresh,
   onBackToProjects,
 }: ProjectDashboardProps) {
-  const [activeTab, setActiveTab] = useState<"prompts" | "tests" | "runs" | "settings">("prompts");
+  const [internalTab, setInternalTab] = useState<"prompts" | "tests" | "runs" | "settings">("prompts");
+  const activeTab = controlledTab ?? internalTab;
+  const setActiveTab = onTabChange ?? setInternalTab;
   const [activeRunReport, setActiveRunReport] = useState<Run | null>(null);
   const [liveRun, setLiveRun] = useState<Run | null>(null);
   const [isRunDialogOpen, setIsRunDialogOpen] = useState(false);

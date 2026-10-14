@@ -313,6 +313,23 @@ export const api = {
   deleteProject: (projectId: number) =>
     fetchWithAuth(`/api/projects/${projectId}`, { method: "DELETE" }),
 
+  setProjectApiKey: (
+    projectId: number,
+    apiKey: string
+  ): Promise<{ has_key: boolean; masked_key: string | null }> =>
+    fetchWithAuth(`/api/projects/${projectId}/api-key`, {
+      method: "POST",
+      body: JSON.stringify({ api_key: apiKey }),
+    }),
+
+  getProjectApiKeyStatus: (
+    projectId: number
+  ): Promise<{ has_key: boolean; masked_key: string | null }> =>
+    fetchWithAuth(`/api/projects/${projectId}/api-key`),
+
+  deleteProjectApiKey: (projectId: number) =>
+    fetchWithAuth(`/api/projects/${projectId}/api-key`, { method: "DELETE" }),
+
   // Prompts & Versions
   listPrompts: (projectId: number): Promise<PromptItem[]> =>
     fetchWithAuth(`/api/projects/${projectId}/prompts`),
