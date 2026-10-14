@@ -322,13 +322,20 @@ export const api = {
     data: {
       name: string;
       description?: string;
-      initial_version_content: string;
+      initial_version_content?: string;
+      initial_content?: string;
       commit_message?: string;
     }
   ): Promise<PromptItem> =>
     fetchWithAuth(`/api/projects/${projectId}/prompts`, {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({
+        name: data.name,
+        description: data.description,
+        initial_content: data.initial_content || data.initial_version_content,
+        initial_version_content: data.initial_version_content || data.initial_content,
+        commit_message: data.commit_message,
+      }),
     }),
 
   listPromptVersions: (promptId: number): Promise<PromptVersion[]> =>
@@ -349,7 +356,7 @@ export const api = {
     includeInactive = false
   ): Promise<TestCase[]> =>
     fetchWithAuth(
-      `/api/projects/${projectId}/test-cases?include_inactive=${includeInactive}`
+      `/api/projects/${projectId}/tests?include_inactive=${includeInactive}`
     ),
 
   createTestCase: (
@@ -357,11 +364,11 @@ export const api = {
     data: {
       name: string;
       inputs?: Record<string, any>;
-      expected_output?: string;
+      expected_output?: string | null;
       assertions?: Array<Record<string, any>>;
     }
   ): Promise<TestCase> =>
-    fetchWithAuth(`/api/projects/${projectId}/test-cases`, {
+    fetchWithAuth(`/api/projects/${projectId}/tests`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
@@ -371,7 +378,7 @@ export const api = {
     data: {
       name?: string;
       inputs?: Record<string, any>;
-      expected_output?: string;
+      expected_output?: string | null;
       assertions?: Array<Record<string, any>>;
       is_active?: boolean;
     }
@@ -381,7 +388,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  deleteTestCase: (testCaseId: number): Promise<TestCase> =>
+  deleteTestCase: (testCaseId: number): Promise<void> =>
     fetchWithAuth(`/api/test-cases/${testCaseId}`, { method: "DELETE" }),
 
   reactivateTestCase: (testCaseId: number): Promise<TestCase> =>
@@ -394,22 +401,22 @@ export const api = {
     testCases: Array<{
       name: string;
       inputs?: Record<string, any>;
-      expected_output?: string;
+      expected_output?: string | null;
       assertions?: Array<Record<string, any>>;
     }>
-  ): Promise<TestCase[]> =>
-    fetchWithAuth(`/api/projects/${projectId}/test-cases/batch`, {
+  ): Promise<{ imported_count: number; test_cases: TestCase[] }> =>
+    fetchWithAuth(`/api/projects/${projectId}/tests/import`, {
       method: "POST",
-      body: JSON.stringify(testCases),
+      body: JSON.stringify({ tests: testCases }),
     }),
 
   importCsvTestCases: (
     projectId: number,
     file: File
-  ): Promise<{ message: string; imported_count: number }> => {
+  ): Promise<{ message?: string; imported_count: number }> => {
     const formData = new FormData();
     formData.append("file", file);
-    return fetchWithAuth(`/api/projects/${projectId}/test-cases/import/csv`, {
+    return fetchWithAuth(`/api/projects/${projectId}/tests/import-file`, {
       method: "POST",
       body: formData,
     });

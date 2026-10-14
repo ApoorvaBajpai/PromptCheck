@@ -167,7 +167,7 @@ Instructions:
       assertions: [
         { type: "contains", substring: "Julia" },
         { type: "contains", substring: "ORD-99318" },
-        { type: "not_contains", value: "credit card number" },
+        { type: "contains", mode: "none", substrings: ["credit card", "password"] },
       ],
     },
   ];

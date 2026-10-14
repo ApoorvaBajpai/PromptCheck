@@ -3,10 +3,11 @@ import hashlib
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_user_project
+from app.api.deps import get_current_user, get_user_project
 from app.database import get_db
 from app.models.project import Project
 from app.models.prompt import Prompt, PromptVersion
+from app.models.user import User
 from app.schemas.prompt import (
     PromptCreate,
     PromptOut,
@@ -60,14 +61,15 @@ def create_prompt(
     db.refresh(prompt)
 
     # If initial content provided, create version 1
-    if payload.initial_content:
-        content_hash = _calculate_content_hash(payload.initial_content)
+    init_content = payload.initial_content or payload.initial_version_content
+    if init_content:
+        content_hash = _calculate_content_hash(init_content)
         v1 = PromptVersion(
             prompt_id=prompt.id,
             version_number=1,
-            content=payload.initial_content,
+            content=init_content,
             content_hash=content_hash,
-            commit_message="Initial version",
+            commit_message=payload.commit_message or "Initial version",
         )
         db.add(v1)
         db.commit()
@@ -276,4 +278,98 @@ def get_prompt_version(
             detail="Prompt version not found",
         )
 
+    return PromptVersionOut.model_validate(version)
+
+
+# --- Standalone Prompt Routes (/api/prompts/...) ---
+standalone_prompt_router = APIRouter(tags=["Prompts"])
+
+
+@standalone_prompt_router.get(
+    "/api/prompts/{prompt_id}/versions", response_model=list[PromptVersionOut]
+)
+def list_prompt_versions_standalone(
+    prompt_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List all immutable versions of a prompt directly by prompt ID."""
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prompt not found",
+        )
+    project = db.query(Project).filter(Project.id == prompt.project_id).first()
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prompt not found",
+        )
+
+    versions = (
+        db.query(PromptVersion)
+        .filter(PromptVersion.prompt_id == prompt.id)
+        .order_by(PromptVersion.version_number.desc())
+        .all()
+    )
+    return [PromptVersionOut.model_validate(v) for v in versions]
+
+
+@standalone_prompt_router.post(
+    "/api/prompts/{prompt_id}/versions",
+    response_model=PromptVersionOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_prompt_version_standalone(
+    prompt_id: int,
+    payload: PromptVersionCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new immutable prompt version directly by prompt ID."""
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prompt not found",
+        )
+    project = db.query(Project).filter(Project.id == prompt.project_id).first()
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prompt not found",
+        )
+
+    content_hash = _calculate_content_hash(payload.content)
+
+    existing_version = (
+        db.query(PromptVersion)
+        .filter(
+            PromptVersion.prompt_id == prompt.id,
+            PromptVersion.content_hash == content_hash,
+        )
+        .first()
+    )
+    if existing_version:
+        return PromptVersionOut.model_validate(existing_version)
+
+    highest_version = (
+        db.query(PromptVersion.version_number)
+        .filter(PromptVersion.prompt_id == prompt.id)
+        .order_by(PromptVersion.version_number.desc())
+        .first()
+    )
+    next_version = (highest_version[0] + 1) if highest_version else 1
+
+    version = PromptVersion(
+        prompt_id=prompt.id,
+        version_number=next_version,
+        content=payload.content,
+        content_hash=content_hash,
+        commit_message=payload.commit_message,
+    )
+    db.add(version)
+    db.commit()
+    db.refresh(version)
     return PromptVersionOut.model_validate(version)

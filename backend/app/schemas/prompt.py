@@ -24,6 +24,8 @@ class PromptCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     initial_content: str | None = None
+    initial_version_content: str | None = None
+    commit_message: str | None = None
 
 
 class PromptUpdate(BaseModel):
