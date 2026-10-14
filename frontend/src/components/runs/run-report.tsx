@@ -37,7 +37,7 @@ export function RunReport({
   const { showToast } = useToast();
 
   const [activeTab, setActiveTab] = useState<
-    "all" | "regression" | "soft_regression" | "improvement" | "unchanged"
+    "all" | "regression" | "soft_regression" | "persistent_failure" | "improvement" | "unchanged"
   >("all");
 
   const [inspectingResult, setInspectingResult] = useState<RunResult | null>(null);
@@ -53,36 +53,45 @@ export function RunReport({
   const hasBaseline = Boolean(run.baseline_run_id);
 
   // Categorize results accurately whether a baseline exists or not
-  const regressions = results.filter(
-    (r) => r.classification === "regression" || (!hasBaseline && r.status === "failed")
+  const regressions = results.filter((r) =>
+    hasBaseline ? r.classification === "regression" : r.status === "failed"
   );
-  const softRegressions = results.filter(
-    (r) => r.classification === "soft_regression"
+  const softRegressions = results.filter((r) => r.classification === "soft_regression");
+  const persistentFailures = results.filter(
+    (r) => hasBaseline && r.classification === "unchanged" && r.status === "failed"
   );
-  const improvements = results.filter(
-    (r) => r.classification === "improvement"
-  );
-  const unchanged = results.filter(
+  const improvements = results.filter((r) => r.classification === "improvement");
+  const unchangedPassed = results.filter(
     (r) =>
-      r.classification === "unchanged" ||
-      r.classification === "passed" ||
       (!hasBaseline && r.status === "passed") ||
-      (r.status === "passed" && !r.classification)
+      (hasBaseline && r.classification === "unchanged" && r.status === "passed") ||
+      r.classification === "passed"
   );
   const inconclusive = results.filter(
     (r) =>
       r.classification === "inconclusive" ||
       r.status === "error" ||
-      (![...regressions, ...softRegressions, ...improvements, ...unchanged].includes(r))
+      (![
+        ...regressions,
+        ...softRegressions,
+        ...persistentFailures,
+        ...improvements,
+        ...unchangedPassed,
+      ].includes(r))
   );
 
-  // Sort with regressions/failed tests first for maximum visibility
+  // Sort: CRITICAL REGRESSIONS FIRST, then soft regressions, persistent failures, improvements, passed
   const sortedAllResults = [...results].sort((a, b) => {
-    const scoreA =
-      a.classification === "regression" || a.status === "failed" ? 0 : 1;
-    const scoreB =
-      b.classification === "regression" || b.status === "failed" ? 0 : 1;
-    return scoreA - scoreB;
+    const getPriority = (r: RunResult) => {
+      if (hasBaseline && r.classification === "regression") return 0; // Absolute #1: Show Regressions First!
+      if (!hasBaseline && r.status === "failed") return 1;
+      if (r.classification === "soft_regression") return 2;
+      if (r.status === "failed") return 3; // Persistent failures
+      if (r.classification === "inconclusive" || r.status === "error") return 4;
+      if (r.classification === "improvement") return 5;
+      return 6; // Passed / unchanged
+    };
+    return getPriority(a) - getPriority(b);
   });
 
   // Filter based on active tab
@@ -93,9 +102,11 @@ export function RunReport({
       ? regressions
       : activeTab === "soft_regression"
       ? softRegressions
+      : activeTab === "persistent_failure"
+      ? persistentFailures
       : activeTab === "improvement"
       ? improvements
-      : unchanged;
+      : unchangedPassed;
 
   const handleSetProjectBaseline = async () => {
     setIsDesignatingBaseline(true);
@@ -340,7 +351,7 @@ export function RunReport({
         <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-slate-400">Filter View:</span>
-            <div className="flex border border-slate-800 rounded-xl p-0.5 bg-slate-950 text-xs font-semibold">
+            <div className="flex flex-wrap border border-slate-800 rounded-xl p-0.5 bg-slate-950 text-xs font-semibold gap-1">
               <button
                 onClick={() => setActiveTab("all")}
                 className={`px-3 py-1 rounded-lg transition ${
@@ -351,12 +362,15 @@ export function RunReport({
               >
                 All Tests ({results.length})
               </button>
+
               <button
                 onClick={() => setActiveTab("regression")}
                 className={`px-3 py-1 rounded-lg transition flex items-center gap-1.5 ${
                   activeTab === "regression"
                     ? "bg-rose-600 text-white"
-                    : "text-rose-400 hover:text-rose-300"
+                    : regressions.length > 0
+                    ? "text-rose-400 font-bold hover:text-rose-300"
+                    : "text-slate-500 hover:text-slate-400"
                 }`}
               >
                 <AlertOctagon className="w-3.5 h-3.5" />
@@ -366,39 +380,59 @@ export function RunReport({
                     : `Failed (${run.failed_tests})`}
                 </span>
               </button>
+
               <button
                 onClick={() => setActiveTab("soft_regression")}
                 className={`px-3 py-1 rounded-lg transition flex items-center gap-1.5 ${
                   activeTab === "soft_regression"
                     ? "bg-amber-600 text-white"
-                    : "text-amber-400 hover:text-amber-300"
+                    : softRegressions.length > 0
+                    ? "text-amber-400 hover:text-amber-300"
+                    : "text-slate-500 hover:text-slate-400"
                 }`}
               >
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>Soft Regressions ({softRegressions.length})</span>
               </button>
+
+              {hasBaseline && persistentFailures.length > 0 && (
+                <button
+                  onClick={() => setActiveTab("persistent_failure")}
+                  className={`px-3 py-1 rounded-lg transition flex items-center gap-1.5 ${
+                    activeTab === "persistent_failure"
+                      ? "bg-rose-900/80 text-white"
+                      : "text-rose-400/80 hover:text-rose-300"
+                  }`}
+                >
+                  <MinusCircle className="w-3.5 h-3.5" />
+                  <span>Consistent Failures ({persistentFailures.length})</span>
+                </button>
+              )}
+
               <button
                 onClick={() => setActiveTab("improvement")}
                 className={`px-3 py-1 rounded-lg transition flex items-center gap-1.5 ${
                   activeTab === "improvement"
                     ? "bg-emerald-600 text-white"
-                    : "text-emerald-400 hover:text-emerald-300"
+                    : improvements.length > 0
+                    ? "text-emerald-400 hover:text-emerald-300"
+                    : "text-slate-500 hover:text-slate-400"
                 }`}
               >
                 <TrendingUp className="w-3.5 h-3.5" />
                 <span>Improvements ({improvements.length})</span>
               </button>
+
               <button
                 onClick={() => setActiveTab("unchanged")}
-                className={`px-3 py-1 rounded-lg transition ${
+                className={`px-3 py-1 rounded-lg transition flex items-center gap-1.5 ${
                   activeTab === "unchanged"
                     ? "bg-slate-700 text-white"
                     : "text-slate-400 hover:text-white"
                 }`}
               >
-                {hasBaseline
-                  ? `Unchanged (${unchanged.length})`
-                  : `Passed (${unchanged.length})`}
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Passed ({unchangedPassed.length})</span>
               </button>
             </div>
           </div>
@@ -407,36 +441,54 @@ export function RunReport({
         {/* Results List */}
         <div className="space-y-3">
           {displayedResults.map((r) => {
-            const isReg = r.classification === "regression" || r.status === "failed";
+            const isHardReg = hasBaseline && r.classification === "regression";
+            const isInitialFail = !hasBaseline && r.status === "failed";
+            const isPersistentFail =
+              hasBaseline && r.classification === "unchanged" && r.status === "failed";
             const isSoft = r.classification === "soft_regression";
             const isImp = r.classification === "improvement";
+
+            let cardStyle = "bg-slate-900/80 border-slate-800";
+            if (isHardReg) {
+              cardStyle =
+                "bg-gradient-to-r from-rose-950/60 via-rose-900/30 to-slate-900 border-2 border-rose-500 shadow-xl shadow-rose-950/50 ring-1 ring-rose-500/50";
+            } else if (isInitialFail) {
+              cardStyle =
+                "bg-rose-950/20 border border-rose-800/80 shadow-md shadow-rose-950/20";
+            } else if (isPersistentFail) {
+              cardStyle = "bg-slate-900/90 border border-rose-950 shadow";
+            } else if (isSoft) {
+              cardStyle =
+                "bg-amber-950/20 border border-amber-800/80 shadow-md shadow-amber-950/20";
+            } else if (isImp) {
+              cardStyle =
+                "bg-emerald-950/20 border border-emerald-800/80 shadow-md shadow-emerald-950/20";
+            }
 
             return (
               <div
                 key={r.id}
-                className={`p-4 sm:p-5 rounded-2xl border transition-all ${
-                  isReg
-                    ? "bg-rose-950/20 border-rose-900/80 shadow-lg shadow-rose-950/20"
-                    : isSoft
-                    ? "bg-amber-950/20 border-amber-900/80 shadow-lg shadow-amber-950/20"
-                    : isImp
-                    ? "bg-emerald-950/15 border-emerald-900/60"
-                    : "bg-slate-900/80 border-slate-800"
-                }`}
+                className={`p-4 sm:p-5 rounded-2xl border transition-all ${cardStyle}`}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                   {/* Test Info */}
                   <div className="space-y-1.5 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       {/* Classification Badge (Never color alone; icons + text) */}
-                      {isReg ? (
+                      {isHardReg ? (
+                        <span className="flex items-center gap-1.5 text-[11px] font-extrabold text-white bg-rose-600 px-3 py-1 rounded-full shadow-lg shadow-rose-600/40 animate-pulse tracking-wide">
+                          <AlertOctagon className="w-3.5 h-3.5" />
+                          <span>🚨 CRITICAL REGRESSION</span>
+                        </span>
+                      ) : isInitialFail ? (
                         <span className="flex items-center gap-1 text-[11px] font-bold text-rose-300 bg-rose-950/80 border border-rose-700 px-2.5 py-0.5 rounded-full">
                           <AlertOctagon className="w-3.5 h-3.5 text-rose-400" />
-                          <span>
-                            {hasBaseline && r.classification === "regression"
-                              ? "❌ Hard Regression"
-                              : "❌ Test Failed"}
-                          </span>
+                          <span>❌ Test Failed</span>
+                        </span>
+                      ) : isPersistentFail ? (
+                        <span className="flex items-center gap-1 text-[11px] font-bold text-rose-300/80 bg-rose-950/40 border border-rose-900/60 px-2.5 py-0.5 rounded-full">
+                          <MinusCircle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>❌ Consistent Failure</span>
                         </span>
                       ) : isSoft ? (
                         <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-950/80 border border-amber-700 px-2.5 py-0.5 rounded-full">
@@ -452,9 +504,7 @@ export function RunReport({
                         <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-800/80 px-2.5 py-0.5 rounded-full">
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                           <span>
-                            {hasBaseline && r.classification === "unchanged"
-                              ? "⚪ Unchanged"
-                              : "✅ Test Passed"}
+                            {hasBaseline ? "⚪ Passed (Unchanged)" : "✅ Test Passed"}
                           </span>
                         </span>
                       )}
