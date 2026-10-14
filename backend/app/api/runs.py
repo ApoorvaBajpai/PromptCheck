@@ -8,13 +8,20 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_user_project
 from app.database import get_db
 from app.engine.events import broadcaster
+from app.engine.regression import apply_regression_analysis_to_run
 from app.engine.runner import run_engine_executor
 from app.models.project import Project
 from app.models.prompt import PromptVersion
 from app.models.run import Run, RunResult
 from app.models.test_case import TestCase
 from app.models.user import User
-from app.schemas.run import RunCreate, RunDetailOut, RunOut, RunResultOut
+from app.schemas.run import (
+    BaselineSetRequest,
+    RunCreate,
+    RunDetailOut,
+    RunOut,
+    RunResultOut,
+)
 
 router = APIRouter(tags=["Runs"])
 
@@ -94,9 +101,24 @@ def create_run_for_project(
             ),
         )
 
+    # 4. Check explicit baseline if supplied
+    baseline_id = payload.baseline_run_id
+    if baseline_id is not None:
+        base_run = (
+            db.query(Run)
+            .filter(Run.id == baseline_id, Run.project_id == project.id)
+            .first()
+        )
+        if not base_run or base_run.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Specified baseline run #{baseline_id} does not exist or is not completed.",
+            )
+
     run = Run(
         project_id=project.id,
         prompt_version_id=prompt_version.id,
+        baseline_run_id=baseline_id,
         status="queued",
         total_tests=test_count,
     )
@@ -136,11 +158,92 @@ def get_run_details(
         id=run.id,
         project_id=run.project_id,
         prompt_version_id=run.prompt_version_id,
+        baseline_run_id=run.baseline_run_id,
         status=run.status,
         total_tests=run.total_tests,
         passed_tests=run.passed_tests,
         failed_tests=run.failed_tests,
         error_message=run.error_message,
+        summary=run.summary,
+        heartbeat_at=run.heartbeat_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+        results=[RunResultOut.model_validate(r) for r in results],
+    )
+
+
+@router.post("/runs/{run_id}/baseline", response_model=RunDetailOut)
+@router.post("/api/runs/{run_id}/baseline", response_model=RunDetailOut)
+def set_run_baseline(
+    run_id: int,
+    payload: BaselineSetRequest | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Designate a run as baseline or configure explicit baseline comparison (Requirement 12).
+    """
+    run = _check_run_ownership(run_id, current_user, db)
+    project = db.query(Project).filter(Project.id == run.project_id).first()
+
+    target_baseline_id = payload.baseline_run_id if payload else None
+
+    if target_baseline_id is not None:
+        # Validate target baseline
+        base_run = (
+            db.query(Run)
+            .filter(
+                Run.id == target_baseline_id,
+                Run.project_id == run.project_id,
+                Run.id != run.id,
+            )
+            .first()
+        )
+        if not base_run or base_run.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Specified baseline run #{target_baseline_id} does not exist or is not completed.",
+            )
+
+        run.baseline_run_id = target_baseline_id
+        if payload and payload.set_as_project_baseline and project:
+            project.baseline_run_id = target_baseline_id
+        db.commit()
+
+        # Re-compute regression analysis against selected baseline
+        apply_regression_analysis_to_run(db, run.id, explicit_baseline_id=target_baseline_id)
+    else:
+        # If no explicit baseline_run_id is passed, designate this run as the project's baseline
+        if run.status != "completed":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only completed runs can be designated as a project baseline.",
+            )
+        if project:
+            project.baseline_run_id = run.id
+            db.commit()
+
+        # Re-evaluate this run's regressions if applicable
+        if run.status == "completed":
+            apply_regression_analysis_to_run(db, run.id)
+
+    db.refresh(run)
+    results = (
+        db.query(RunResult).filter(RunResult.run_id == run.id).order_by(RunResult.id.asc()).all()
+    )
+    return RunDetailOut(
+        id=run.id,
+        project_id=run.project_id,
+        prompt_version_id=run.prompt_version_id,
+        baseline_run_id=run.baseline_run_id,
+        status=run.status,
+        total_tests=run.total_tests,
+        passed_tests=run.passed_tests,
+        failed_tests=run.failed_tests,
+        error_message=run.error_message,
+        summary=run.summary,
         heartbeat_at=run.heartbeat_at,
         started_at=run.started_at,
         completed_at=run.completed_at,

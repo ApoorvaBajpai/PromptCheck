@@ -38,10 +38,17 @@ class Run(Base):
     # Status: queued, running, completed, failed, cancelled
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True, nullable=False)
 
+    baseline_run_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("runs.id", ondelete="SET NULL", name="fk_runs_baseline_run_id"),
+        nullable=True,
+    )
+
     total_tests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     passed_tests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_tests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -63,8 +70,9 @@ class Run(Base):
         nullable=False,
     )
 
-    project = relationship("Project")
+    project = relationship("Project", foreign_keys=[project_id])
     prompt_version = relationship("PromptVersion")
+    baseline_run = relationship("Run", remote_side="Run.id", foreign_keys=[baseline_run_id])
     results = relationship(
         "RunResult",
         back_populates="run",
@@ -103,6 +111,10 @@ class RunResult(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cached: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    score: Mapped[float | None] = mapped_column(Float, default=0.0, nullable=True)
+    classification: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    comparison_details: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     assertion_results: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON,

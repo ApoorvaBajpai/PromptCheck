@@ -15,6 +15,7 @@ from app.engine.client import (
 from app.engine.events import broadcaster
 from app.engine.prompt_renderer import PromptRenderError, render_prompt
 from app.engine.rate_limiter import RateLimiter, calculate_backoff
+from app.engine.regression import apply_regression_analysis_to_run, calculate_test_score
 from app.evaluators import EvaluationContext, evaluate_all
 from app.models.project import Project
 from app.models.prompt import PromptVersion
@@ -348,6 +349,8 @@ async def run_engine_executor(
                 if db_run and db_run.status == "cancelled":
                     res["status"] = "cancelled"
 
+                test_score = calculate_test_score(res["status"], res["assertion_results"])
+
                 # Invariant: Duplicate result prevention (check if exists first)
                 existing = (
                     db.query(RunResult)
@@ -367,6 +370,7 @@ async def run_engine_executor(
                         completion_tokens=res["completion_tokens"],
                         total_tokens=res["total_tokens"],
                         cached=res["cached"],
+                        score=test_score,
                         assertion_results=res["assertion_results"],
                         retry_count=res["retry_count"],
                     )
@@ -381,6 +385,7 @@ async def run_engine_executor(
                     existing.completion_tokens = res["completion_tokens"]
                     existing.total_tokens = res["total_tokens"]
                     existing.cached = res["cached"]
+                    existing.score = test_score
                     existing.assertion_results = res["assertion_results"]
                     existing.retry_count = res["retry_count"]
                     db.commit()
@@ -419,7 +424,7 @@ async def run_engine_executor(
         except asyncio.CancelledError:
             pass
 
-    # Finalize Run status
+    # Finalize Run status and compute Phase 4 regressions
     with SessionLocal() as db:
         final_run = db.query(Run).filter(Run.id == run_id).first()
         if final_run:
@@ -429,6 +434,17 @@ async def run_engine_executor(
             final_run.failed_tests = failed_count
             final_run.completed_at = datetime.now(UTC)
             db.commit()
+
+            if final_run.status == "completed":
+                try:
+                    apply_regression_analysis_to_run(
+                        db, final_run.id, explicit_baseline_id=final_run.baseline_run_id
+                    )
+                    db.refresh(final_run)
+                except Exception as exc:
+                    # Non-fatal: do not crash run if regression calculation fails
+                    final_run.summary = {"error": f"Regression analysis failed: {exc}"}
+                    db.commit()
 
             final_event = "run_cancelled" if final_run.status == "cancelled" else "run_completed"
             await broadcaster.emit(
@@ -440,5 +456,7 @@ async def run_engine_executor(
                     "total_tests": final_run.total_tests,
                     "passed_tests": final_run.passed_tests,
                     "failed_tests": final_run.failed_tests,
+                    "summary": final_run.summary,
+                    "baseline_run_id": final_run.baseline_run_id,
                 },
             )
