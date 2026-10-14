@@ -51,9 +51,19 @@ class BaseGeminiClient(ABC):
     async def generate_content(
         self,
         prompt: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash",
+        temperature: float = 1.0,
     ) -> GeminiResponse:
         """Generate content from the model."""
+        pass
+
+    @abstractmethod
+    async def embed_content(
+        self,
+        text: str,
+        model: str = "gemini-embedding-001",
+    ) -> list[float]:
+        """Generate text embedding vector."""
         pass
 
 
@@ -69,6 +79,7 @@ class GeminiClient(BaseGeminiClient):
         self,
         prompt: str,
         model: str = "gemini-2.5-flash",
+        temperature: float = 1.0,
     ) -> GeminiResponse:
         if not self.api_key or self.api_key.strip() == "":
             raise GeminiAuthError("API key cannot be empty")
@@ -77,13 +88,15 @@ class GeminiClient(BaseGeminiClient):
             "gemini-2.5-flash" if model in ("gemini-1.5-flash", "gemini-flash") else model
         )
         url = f"{self.base_url}/{target_model}:generateContent?key={self.api_key}"
-        payload = {
+        payload: dict[str, Any] = {
             "contents": [
                 {
                     "parts": [{"text": prompt}],
                 }
             ]
         }
+        if temperature != 1.0:
+            payload["generationConfig"] = {"temperature": temperature}
 
         start_time = time.perf_counter()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -101,7 +114,6 @@ class GeminiClient(BaseGeminiClient):
         if response.status_code == 429:
             raise GeminiRateLimitError(response.text)
         elif response.status_code in (400, 401, 403):
-            # Check if error is related to invalid API key
             raise GeminiAuthError(f"Authentication failed: {response.text}")
         elif response.status_code >= 500:
             raise GeminiServerError(response.text, status_code=response.status_code)
@@ -135,6 +147,51 @@ class GeminiClient(BaseGeminiClient):
             latency_ms=round(latency_ms, 2),
         )
 
+    async def embed_content(
+        self,
+        text: str,
+        model: str = "gemini-embedding-001",
+    ) -> list[float]:
+        if not self.api_key or self.api_key.strip() == "":
+            raise GeminiAuthError("API key cannot be empty")
+
+        target_model = (
+            "gemini-embedding-001"
+            if model in ("text-embedding-004", "embedding-001", "default")
+            else model
+        )
+        url = f"{self.base_url}/{target_model}:embedContent?key={self.api_key}"
+        payload = {
+            "content": {
+                "parts": [{"text": text}]
+            }
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(url, json=payload)
+            except httpx.TimeoutException as exc:
+                raise GeminiServerError("Gemini embedding timed out", status_code=504) from exc
+            except httpx.RequestError as exc:
+                raise GeminiServerError(
+                    f"Network error during embedding: {exc}", status_code=502
+                ) from exc
+
+        if response.status_code == 429:
+            raise GeminiRateLimitError(response.text)
+        elif response.status_code in (400, 401, 403):
+            raise GeminiAuthError(f"Authentication failed: {response.text}")
+        elif response.status_code >= 500:
+            raise GeminiServerError(response.text, status_code=response.status_code)
+        elif response.status_code != 200:
+            raise GeminiError(
+                f"Unexpected embedding error ({response.status_code}): {response.text}",
+                status_code=response.status_code,
+            )
+
+        data = response.json()
+        return data.get("embedding", {}).get("values", [])
+
 
 class FakeGeminiClient(BaseGeminiClient):
     """Programmable mock Gemini client for deterministic unit & integration tests."""
@@ -148,15 +205,32 @@ class FakeGeminiClient(BaseGeminiClient):
         self.simulated_latency_ms = simulated_latency_ms
         self.prompt_responses: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
+        self.embeddings: dict[str, list[float]] = {}
 
-        # Simulated failure counters
+        # Simulated failure counters & switches
         self.fail_429_count = 0
         self.fail_500_count = 0
+        self.fail_embedding_count = 0
+        self.fail_judge_json_once = False
         self.is_invalid_api_key = False
 
     def set_response_for_prompt(self, prompt_substring: str, response: str) -> None:
         """Map a substring to a specific response string."""
         self.prompt_responses[prompt_substring] = response
+
+    def set_judge_response(self, response: dict[str, Any] | str) -> None:
+        """Convenience method to set response for LLM judge prompts."""
+        import json
+
+        text = json.dumps(response) if isinstance(response, dict) else str(response)
+        self.prompt_responses["<evaluation_task>"] = text
+        self.prompt_responses["<rubric>"] = text
+        self.prompt_responses["not valid JSON"] = text
+        self.prompt_responses["raw JSON object"] = text
+
+    def set_embedding_for_text(self, text: str, vector: list[float]) -> None:
+        """Program a deterministic embedding vector for given text."""
+        self.embeddings[text] = vector
 
     def set_fail_with_429(self, count: int = 1) -> None:
         """Configure client to raise 429 for the next `count` calls."""
@@ -166,6 +240,14 @@ class FakeGeminiClient(BaseGeminiClient):
         """Configure client to raise 500 for the next `count` calls."""
         self.fail_500_count = count
 
+    def set_fail_embedding(self, count: int = 1) -> None:
+        """Configure client to fail embed_content calls."""
+        self.fail_embedding_count = count
+
+    def set_fail_judge_json_once(self, enable: bool = True) -> None:
+        """Simulate a malformed JSON response on the first judge call to test 1-time retry."""
+        self.fail_judge_json_once = enable
+
     def set_invalid_api_key(self, is_invalid: bool = True) -> None:
         """Simulate invalid API key rejection."""
         self.is_invalid_api_key = is_invalid
@@ -173,9 +255,17 @@ class FakeGeminiClient(BaseGeminiClient):
     async def generate_content(
         self,
         prompt: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash",
+        temperature: float = 1.0,
     ) -> GeminiResponse:
-        self.calls.append({"prompt": prompt, "model": model, "timestamp": time.time()})
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "temperature": temperature,
+                "timestamp": time.time(),
+            }
+        )
 
         if self.is_invalid_api_key:
             raise GeminiAuthError("Invalid Gemini API key provided")
@@ -187,6 +277,17 @@ class FakeGeminiClient(BaseGeminiClient):
         if self.fail_500_count > 0:
             self.fail_500_count -= 1
             raise GeminiServerError("Simulated 500 Internal Server Error", status_code=500)
+
+        # Handle simulate malformed JSON once for judge retry testing
+        if self.fail_judge_json_once and ("<evaluation_task>" in prompt or "rubric" in prompt):
+            self.fail_judge_json_once = False
+            return GeminiResponse(
+                text="Malformed JSON: {passed: true, missing quotes}",
+                prompt_tokens=20,
+                completion_tokens=10,
+                total_tokens=30,
+                latency_ms=self.simulated_latency_ms,
+            )
 
         # Matched response (sort keys descending by length so longer substrings match first)
         text = self.default_response
@@ -210,3 +311,33 @@ class FakeGeminiClient(BaseGeminiClient):
             total_tokens=total_tokens,
             latency_ms=self.simulated_latency_ms,
         )
+
+    async def embed_content(
+        self,
+        text: str,
+        model: str = "gemini-embedding-001",
+    ) -> list[float]:
+        import math
+
+        if self.fail_embedding_count > 0:
+            self.fail_embedding_count -= 1
+            raise GeminiServerError("Simulated embedding failure", status_code=500)
+
+        if text in self.embeddings:
+            return self.embeddings[text]
+
+        # Deterministic normalized unit vector from string hash
+        dim = 16
+        vec = [0.0] * dim
+        words = text.lower().split()
+        if not words:
+            vec[0] = 1.0
+            return vec
+
+        for word in words:
+            h = abs(hash(word))
+            for i in range(dim):
+                vec[i] += ((h >> (i * 2)) & 0xF) / 15.0 - 0.5
+
+        norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+        return [round(x / norm, 6) for x in vec]

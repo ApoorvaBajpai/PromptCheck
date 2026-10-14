@@ -5,7 +5,6 @@ from typing import Any
 
 from app.core.security import decrypt_api_key
 from app.database import SessionLocal
-from app.engine.assertions import evaluate_assertions
 from app.engine.client import (
     BaseGeminiClient,
     GeminiAuthError,
@@ -16,6 +15,7 @@ from app.engine.client import (
 from app.engine.events import broadcaster
 from app.engine.prompt_renderer import PromptRenderError, render_prompt
 from app.engine.rate_limiter import RateLimiter, calculate_backoff
+from app.evaluators import EvaluationContext, evaluate_all
 from app.models.project import Project
 from app.models.prompt import PromptVersion
 from app.models.run import OutputCache, Run, RunResult
@@ -90,7 +90,16 @@ async def execute_test_case(
                     db.query(OutputCache).filter(OutputCache.cache_key == cache_key).first()
                 )
                 if cached_entry:
-                    passed, assertion_res = evaluate_assertions(cached_entry.output, assertions)
+                    passed, assertion_res = await evaluate_all(
+                        cached_entry.output,
+                        assertions,
+                        client=client,
+                        context=EvaluationContext(
+                            rendered_prompt=rendered,
+                            test_inputs=inputs,
+                            test_case_name=test_name,
+                        ),
+                    )
                     return {
                         "test_case_id": test_case_id,
                         "status": "passed" if passed else "failed",
@@ -202,8 +211,17 @@ async def execute_test_case(
                 except Exception:
                     db.rollback()
 
-        # 5. Evaluate assertions
-        passed, assertion_res = evaluate_assertions(response.text, assertions)
+        # 5. Evaluate assertions using Evaluator framework
+        passed, assertion_res = await evaluate_all(
+            response.text,
+            assertions,
+            client=client,
+            context=EvaluationContext(
+                rendered_prompt=rendered,
+                test_inputs=inputs,
+                test_case_name=test_name,
+            ),
+        )
 
         return {
             "test_case_id": test_case_id,
