@@ -31,7 +31,8 @@ def _to_prompt_out(prompt: Prompt, db: Session) -> PromptOut:
         .order_by(PromptVersion.version_number.desc())
         .all()
     )
-    latest = PromptVersionOut.model_validate(versions[0]) if versions else None
+    version_outs = [PromptVersionOut.model_validate(v) for v in versions]
+    latest = version_outs[0] if version_outs else None
     return PromptOut(
         id=prompt.id,
         project_id=prompt.project_id,
@@ -39,6 +40,7 @@ def _to_prompt_out(prompt: Prompt, db: Session) -> PromptOut:
         description=prompt.description,
         versions_count=len(versions),
         latest_version=latest,
+        versions=version_outs,
         created_at=prompt.created_at,
         updated_at=prompt.updated_at,
     )

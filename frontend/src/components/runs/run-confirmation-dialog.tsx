@@ -33,14 +33,24 @@ export function RunConfirmationDialog({
   // Find all prompt versions across prompts
   const allVersions: Array<{ promptName: string; version: PromptVersion }> = [];
   prompts.forEach((p) => {
-    (p.versions || []).forEach((v) => {
-      allVersions.push({ promptName: p.name, version: v });
-    });
+    if (p.versions && p.versions.length > 0) {
+      p.versions.forEach((v) => {
+        allVersions.push({ promptName: p.name, version: v });
+      });
+    } else if (p.latest_version) {
+      allVersions.push({ promptName: p.name, version: p.latest_version });
+    }
   });
 
   const [selectedVersionId, setSelectedVersionId] = useState<number>(
-    activeVersionId || (allVersions[0]?.version.id ?? 1)
+    activeVersionId || (allVersions[0]?.version.id ?? 0)
   );
+
+  React.useEffect(() => {
+    if (!selectedVersionId && allVersions.length > 0) {
+      setSelectedVersionId(allVersions[0].version.id);
+    }
+  }, [allVersions, selectedVersionId]);
 
   const completedRuns = runs.filter((r) => r.status === "completed");
   const [selectedBaselineId, setSelectedBaselineId] = useState<string>("auto");
@@ -130,16 +140,23 @@ export function RunConfirmationDialog({
               Select Prompt Version to Evaluate *
             </label>
             <select
-              value={selectedVersionId}
+              value={selectedVersionId || ""}
               onChange={(e) => setSelectedVersionId(Number(e.target.value))}
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-semibold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              disabled={allVersions.length === 0}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-semibold text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
             >
-              {allVersions.map(({ promptName, version }) => (
-                <option key={version.id} value={version.id}>
-                  {promptName} — v{version.version_number} (
-                  {version.commit_message || "no message"})
+              {allVersions.length === 0 ? (
+                <option value="" disabled>
+                  No prompt versions available. Create a prompt version first.
                 </option>
-              ))}
+              ) : (
+                allVersions.map(({ promptName, version }) => (
+                  <option key={version.id} value={version.id}>
+                    {promptName} — v{version.version_number} (
+                    {version.commit_message || "no message"})
+                  </option>
+                ))
+              )}
             </select>
           </div>
 

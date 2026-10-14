@@ -40,6 +40,7 @@ class PromptOut(BaseModel):
     description: str | None = None
     versions_count: int = 0
     latest_version: PromptVersionOut | None = None
+    versions: list[PromptVersionOut] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
