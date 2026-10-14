@@ -13,7 +13,6 @@ from app.models.project import Project
 from app.models.test_case import TestCase
 from app.models.user import User
 from app.schemas.test_case import (
-    TestCaseBatchImport,
     TestCaseCreate,
     TestCaseOut,
     TestCaseUpdate,
