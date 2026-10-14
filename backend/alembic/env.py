@@ -9,6 +9,7 @@ from alembic import context
 # Ensure app is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import app.models  # noqa: F401
 from app.config import settings
 from app.database import Base
 
