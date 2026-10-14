@@ -50,10 +50,11 @@ export function RunReport({
 
   const results = run.results || [];
   const summary = run.summary;
+  const hasBaseline = Boolean(run.baseline_run_id);
 
-  // Separate results into categories
+  // Categorize results accurately whether a baseline exists or not
   const regressions = results.filter(
-    (r) => r.classification === "regression" || (r.status === "failed" && !r.classification)
+    (r) => r.classification === "regression" || (!hasBaseline && r.status === "failed")
   );
   const softRegressions = results.filter(
     (r) => r.classification === "soft_regression"
@@ -62,17 +63,32 @@ export function RunReport({
     (r) => r.classification === "improvement"
   );
   const unchanged = results.filter(
-    (r) => r.classification === "unchanged" || (r.status === "passed" && !r.classification)
+    (r) =>
+      r.classification === "unchanged" ||
+      r.classification === "passed" ||
+      (!hasBaseline && r.status === "passed") ||
+      (r.status === "passed" && !r.classification)
   );
   const inconclusive = results.filter(
-    (r) => r.classification === "inconclusive" || r.status === "error"
+    (r) =>
+      r.classification === "inconclusive" ||
+      r.status === "error" ||
+      (![...regressions, ...softRegressions, ...improvements, ...unchanged].includes(r))
   );
+
+  // Sort with regressions/failed tests first for maximum visibility
+  const sortedAllResults = [...results].sort((a, b) => {
+    const scoreA =
+      a.classification === "regression" || a.status === "failed" ? 0 : 1;
+    const scoreB =
+      b.classification === "regression" || b.status === "failed" ? 0 : 1;
+    return scoreA - scoreB;
+  });
 
   // Filter based on active tab
   const displayedResults =
     activeTab === "all"
-      ? // Order: Regressions FIRST, then Soft Regressions, then Improvements, then Unchanged
-        [...regressions, ...softRegressions, ...improvements, ...unchanged, ...inconclusive]
+      ? sortedAllResults
       : activeTab === "regression"
       ? regressions
       : activeTab === "soft_regression"
@@ -104,9 +120,28 @@ export function RunReport({
   };
 
   // Determine Executive Verdict (<10 second comprehension)
-  const hasHardRegressions = (summary?.regressions ?? 0) > 0 || regressions.length > 0;
-  const hasSoftRegressions = (summary?.soft_regressions ?? 0) > 0 || softRegressions.length > 0;
-  const isAllPassed = run.failed_tests === 0 && !hasHardRegressions;
+  const hasHardRegressions =
+    hasBaseline &&
+    ((summary?.regressions ?? 0) > 0 ||
+      results.some((r) => r.classification === "regression"));
+  const hasSoftRegressions =
+    hasBaseline &&
+    ((summary?.soft_regressions ?? 0) > 0 ||
+      results.some((r) => r.classification === "soft_regression"));
+  const isAllPassed = run.failed_tests === 0;
+
+  // Latency & duration calculation
+  const runDurationSec =
+    run.started_at && run.completed_at
+      ? Math.max(
+          0,
+          (new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) /
+            1000
+        )
+      : null;
+  const cumulativeLatencySec =
+    results.reduce((acc, r) => acc + (r.latency_ms || 0), 0) / 1000;
+  const isAllCached = results.length > 0 && results.every((r) => r.cached);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -117,6 +152,8 @@ export function RunReport({
             ? "bg-gradient-to-r from-rose-950/80 via-rose-900/40 to-slate-900 border-rose-700/80"
             : hasSoftRegressions
             ? "bg-gradient-to-r from-amber-950/80 via-amber-900/40 to-slate-900 border-amber-700/80"
+            : !hasBaseline && !isAllPassed
+            ? "bg-gradient-to-r from-amber-950/70 via-slate-900 to-slate-900 border-amber-700/60"
             : isAllPassed
             ? "bg-gradient-to-r from-emerald-950/80 via-emerald-900/40 to-slate-900 border-emerald-700/80"
             : "bg-slate-900 border-slate-800"
@@ -128,14 +165,14 @@ export function RunReport({
               className={`p-3.5 rounded-2xl shadow-xl shrink-0 ${
                 hasHardRegressions
                   ? "bg-rose-600 text-white"
-                  : hasSoftRegressions
+                  : hasSoftRegressions || (!hasBaseline && !isAllPassed)
                   ? "bg-amber-500 text-slate-950"
                   : "bg-emerald-500 text-slate-950"
               }`}
             >
               {hasHardRegressions ? (
                 <AlertOctagon className="w-8 h-8" />
-              ) : hasSoftRegressions ? (
+              ) : hasSoftRegressions || (!hasBaseline && !isAllPassed) ? (
                 <AlertTriangle className="w-8 h-8" />
               ) : (
                 <CheckCircle2 className="w-8 h-8" />
@@ -147,9 +184,13 @@ export function RunReport({
                 <span className="text-xs uppercase font-extrabold tracking-wider px-2.5 py-0.5 rounded-full bg-slate-950/70 text-slate-200 border border-slate-800">
                   Run #{run.id} • Evaluation Report
                 </span>
-                {run.baseline_run_id && (
-                  <span className="text-xs text-slate-300 font-medium">
+                {run.baseline_run_id ? (
+                  <span className="text-xs text-indigo-300 font-semibold bg-indigo-950/60 px-2 py-0.5 rounded-md border border-indigo-800/60">
                     Compared against Baseline Run #{run.baseline_run_id}
+                  </span>
+                ) : (
+                  <span className="text-xs text-slate-400 font-medium">
+                    Initial Run (No baseline set)
                   </span>
                 )}
               </div>
@@ -159,6 +200,8 @@ export function RunReport({
                   ? "❌ REGRESSION DETECTED"
                   : hasSoftRegressions
                   ? "⚠️ SOFT REGRESSION DETECTED"
+                  : !hasBaseline && !isAllPassed
+                  ? "⚠️ EVALUATION COMPLETED WITH FAILURES"
                   : isAllPassed
                   ? "🟢 ALL EVALUATION CHECKS PASSED"
                   : "EVALUATION COMPLETED"}
@@ -168,8 +211,12 @@ export function RunReport({
                 {hasHardRegressions
                   ? `${regressions.length} test case(s) that previously passed are now failing on this prompt version. Inspect regressions below.`
                   : hasSoftRegressions
-                  ? "Tests passed their binary assertions, but semantic scores or pass rates dropped compared to the baseline."
-                  : "No regressions detected. This prompt version performed consistently or improved quality across all tests."}
+                  ? "Tests passed assertions, but semantic similarity scores or pass rates dropped compared to the baseline."
+                  : !hasBaseline && !isAllPassed
+                  ? `${run.failed_tests} of ${run.total_tests} tests failed on this prompt version. Review the check results below or designate a baseline to track regressions.`
+                  : !hasBaseline && isAllPassed
+                  ? `All ${run.total_tests} tests passed! Set this run as Project Baseline to track regression trends across future prompt versions.`
+                  : "No regressions detected compared to baseline. All checks passed successfully."}
               </p>
             </div>
           </div>
@@ -218,16 +265,18 @@ export function RunReport({
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
           <span className="text-[11px] font-bold text-slate-400 block mb-1 flex items-center gap-1">
             <AlertOctagon className="w-3 h-3 text-rose-400" />
-            <span>Regressions</span>
+            <span>{hasBaseline ? "Regressions" : "Failures"}</span>
           </span>
           <div
             className={`text-xl font-extrabold font-mono ${
               regressions.length > 0 ? "text-rose-400" : "text-white"
             }`}
           >
-            {regressions.length}
+            {hasBaseline ? (summary?.regressions ?? regressions.length) : run.failed_tests}
           </div>
-          <span className="text-[10px] text-slate-500">Hard pass $\rightarrow$ fail</span>
+          <span className="text-[10px] text-slate-500">
+            {hasBaseline ? "Hard pass → fail" : "Failed tests"}
+          </span>
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
@@ -240,9 +289,9 @@ export function RunReport({
               softRegressions.length > 0 ? "text-amber-400" : "text-white"
             }`}
           >
-            {softRegressions.length}
+            {summary?.soft_regressions ?? softRegressions.length}
           </div>
-          <span className="text-[10px] text-slate-500">Score drop $\ge 15\%$</span>
+          <span className="text-[10px] text-slate-500">Score drop ≥ 15%</span>
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
@@ -251,9 +300,9 @@ export function RunReport({
             <span>Improvements</span>
           </span>
           <div className="text-xl font-extrabold text-emerald-400 font-mono">
-            {improvements.length}
+            {summary?.improvements ?? improvements.length}
           </div>
-          <span className="text-[10px] text-slate-500">Fail $\rightarrow$ pass</span>
+          <span className="text-[10px] text-slate-500">Fail → pass</span>
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
@@ -262,12 +311,15 @@ export function RunReport({
             <span>Total Latency</span>
           </span>
           <div className="text-xl font-extrabold text-white font-mono">
-            {(
-              results.reduce((acc, r) => acc + (r.latency_ms || 0), 0) / 1000
-            ).toFixed(1)}
-            s
+            {cumulativeLatencySec > 0
+              ? `${cumulativeLatencySec.toFixed(1)}s`
+              : runDurationSec !== null
+              ? `${runDurationSec.toFixed(1)}s`
+              : "0.0s"}
           </div>
-          <span className="text-[10px] text-slate-500">Cumulative time</span>
+          <span className="text-[10px] text-slate-500">
+            {isAllCached ? "Cached run time" : "Cumulative time"}
+          </span>
         </div>
 
         <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800">
@@ -308,7 +360,11 @@ export function RunReport({
                 }`}
               >
                 <AlertOctagon className="w-3.5 h-3.5" />
-                <span>Regressions ({regressions.length})</span>
+                <span>
+                  {hasBaseline
+                    ? `Regressions (${regressions.length})`
+                    : `Failed (${run.failed_tests})`}
+                </span>
               </button>
               <button
                 onClick={() => setActiveTab("soft_regression")}
@@ -340,7 +396,9 @@ export function RunReport({
                     : "text-slate-400 hover:text-white"
                 }`}
               >
-                Unchanged ({unchanged.length})
+                {hasBaseline
+                  ? `Unchanged (${unchanged.length})`
+                  : `Passed (${unchanged.length})`}
               </button>
             </div>
           </div>
@@ -374,7 +432,11 @@ export function RunReport({
                       {isReg ? (
                         <span className="flex items-center gap-1 text-[11px] font-bold text-rose-300 bg-rose-950/80 border border-rose-700 px-2.5 py-0.5 rounded-full">
                           <AlertOctagon className="w-3.5 h-3.5 text-rose-400" />
-                          <span>❌ Hard Regression</span>
+                          <span>
+                            {hasBaseline && r.classification === "regression"
+                              ? "❌ Hard Regression"
+                              : "❌ Test Failed"}
+                          </span>
                         </span>
                       ) : isSoft ? (
                         <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-950/80 border border-amber-700 px-2.5 py-0.5 rounded-full">
@@ -387,9 +449,13 @@ export function RunReport({
                           <span>🟢 Improvement</span>
                         </span>
                       ) : (
-                        <span className="flex items-center gap-1 text-[11px] font-bold text-slate-300 bg-slate-950 border border-slate-800 px-2.5 py-0.5 rounded-full">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
-                          <span>⚪ Unchanged</span>
+                        <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-300 bg-emerald-950/60 border border-emerald-800/80 px-2.5 py-0.5 rounded-full">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>
+                            {hasBaseline && r.classification === "unchanged"
+                              ? "⚪ Unchanged"
+                              : "✅ Test Passed"}
+                          </span>
                         </span>
                       )}
 
