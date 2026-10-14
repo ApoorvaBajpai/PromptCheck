@@ -68,12 +68,15 @@ class GeminiClient(BaseGeminiClient):
     async def generate_content(
         self,
         prompt: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.5-flash",
     ) -> GeminiResponse:
         if not self.api_key or self.api_key.strip() == "":
             raise GeminiAuthError("API key cannot be empty")
 
-        url = f"{self.base_url}/{model}:generateContent?key={self.api_key}"
+        target_model = (
+            "gemini-2.5-flash" if model in ("gemini-1.5-flash", "gemini-flash") else model
+        )
+        url = f"{self.base_url}/{target_model}:generateContent?key={self.api_key}"
         payload = {
             "contents": [
                 {

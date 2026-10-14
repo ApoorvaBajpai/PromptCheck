@@ -255,6 +255,10 @@ async def test_invalid_api_key(run_fixture):
 async def test_worker_crash_and_restart(run_fixture):
     project_id, prompt_id, version_id = run_fixture
     with SessionLocal() as db:
+        # Cancel any prior orphaned queued runs from other test fixtures
+        db.query(Run).filter(Run.status == "queued").update({"status": "cancelled"})
+        db.commit()
+
         tc = TestCase(
             project_id=project_id,
             name="Worker Test",

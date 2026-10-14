@@ -38,7 +38,7 @@ async def execute_test_case(
     client: BaseGeminiClient,
     rate_limiter: RateLimiter,
     semaphore: asyncio.Semaphore,
-    model: str = "gemini-1.5-flash",
+    model: str = "gemini-2.5-flash",
     enable_cache: bool = True,
     max_retries: int = 3,
 ) -> dict[str, Any]:

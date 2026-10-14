@@ -8,19 +8,21 @@ Demonstrates:
 - Output caching, token and latency metrics
 - Assertions verification
 """
+
 import asyncio
-import sys
 import time
+
+from app.core.security import get_password_hash
 from app.database import SessionLocal
-from app.models.user import User
+from app.engine.client import FakeGeminiClient
+from app.engine.events import broadcaster
+from app.engine.runner import run_engine_executor
 from app.models.project import Project
 from app.models.prompt import Prompt, PromptVersion
-from app.models.test_case import TestCase
 from app.models.run import Run, RunResult
-from app.core.security import get_password_hash
-from app.engine.client import FakeGeminiClient
-from app.engine.runner import run_engine_executor
-from app.engine.events import broadcaster
+from app.models.test_case import TestCase
+from app.models.user import User
+
 
 async def main():
     print("=" * 70)
@@ -30,6 +32,7 @@ async def main():
     # 1. Setup sample data in database
     with SessionLocal() as db:
         from app.models.run import OutputCache
+
         db.query(OutputCache).delete()
         db.commit()
         email = f"demo_user_{int(time.time())}@promptcheck.io"
@@ -80,7 +83,11 @@ async def main():
         test_cases_data = [
             {
                 "name": "Refund Inquiry",
-                "inputs": {"customer_name": "Alice", "product": "Pro Headphones", "issue": "damaged delivery"},
+                "inputs": {
+                    "customer_name": "Alice",
+                    "product": "Pro Headphones",
+                    "issue": "damaged delivery",
+                },
                 "assertions": [
                     {"type": "contains", "value": "Alice"},
                     {"type": "contains", "value": "refund"},
@@ -89,7 +96,11 @@ async def main():
             },
             {
                 "name": "Shipping Delay",
-                "inputs": {"customer_name": "Bob", "product": "Smart Watch", "issue": "order delayed"},
+                "inputs": {
+                    "customer_name": "Bob",
+                    "product": "Smart Watch",
+                    "issue": "order delayed",
+                },
                 "assertions": [
                     {"type": "contains", "value": "Bob"},
                     {"type": "starts_with", "value": "Dear"},
@@ -98,7 +109,11 @@ async def main():
             },
             {
                 "name": "Warranty Request",
-                "inputs": {"customer_name": "Charlie", "product": "Keyboard", "issue": "key sticking"},
+                "inputs": {
+                    "customer_name": "Charlie",
+                    "product": "Keyboard",
+                    "issue": "key sticking",
+                },
                 "assertions": [
                     {"type": "contains", "value": "warranty"},
                     {"type": "not_contains", "value": "unavailable"},
@@ -107,7 +122,11 @@ async def main():
             },
             {
                 "name": "Billing Question",
-                "inputs": {"customer_name": "Diana", "product": "Subscription", "issue": "double charge"},
+                "inputs": {
+                    "customer_name": "Diana",
+                    "product": "Subscription",
+                    "issue": "double charge",
+                },
                 "assertions": [
                     {"type": "contains", "value": "Diana"},
                     {"type": "regex", "value": r"credited back|refunded"},
@@ -116,7 +135,11 @@ async def main():
             },
             {
                 "name": "Feature Request",
-                "inputs": {"customer_name": "Evan", "product": "Mobile App", "issue": "dark mode request"},
+                "inputs": {
+                    "customer_name": "Evan",
+                    "product": "Mobile App",
+                    "issue": "dark mode request",
+                },
                 "assertions": [
                     {"type": "contains", "value": "dark mode"},
                     {"type": "max_length", "value": 150},
@@ -170,13 +193,15 @@ async def main():
     queue = await broadcaster.subscribe(run_id)
 
     async def sse_listener():
-        print("--- [SSE STREAM OPENED: /api/runs/{}/stream] ---".format(run_id))
+        print(f"--- [SSE STREAM OPENED: /api/runs/{run_id}/stream] ---")
         while True:
             msg = await queue.get()
             event = msg.get("event")
             data = msg.get("data", {})
             if event == "run_started":
-                print(f"  [SSE event: run_started]  Run {data['run_id']} started (Total tests: {data['total_tests']})")
+                print(
+                    f"  [SSE event: run_started]  Run {data['run_id']} started (Total tests: {data['total_tests']})"
+                )
             elif event == "test_result":
                 status_icon = "[PASSED]" if data.get("status") == "passed" else "[FAILED]"
                 print(
@@ -184,7 +209,9 @@ async def main():
                     f"Latency: {data.get('latency_ms')}ms | Tokens: {data.get('total_tokens')}"
                 )
             elif event == "run_progress":
-                print(f"  [SSE event: run_progress] Completed: {data.get('completed')}/{data.get('total')} | Passed: {data.get('passed')} | Failed: {data.get('failed')}")
+                print(
+                    f"  [SSE event: run_progress] Completed: {data.get('completed')}/{data.get('total')} | Passed: {data.get('passed')} | Failed: {data.get('failed')}"
+                )
             elif event == "run_completed":
                 print(f"  [SSE event: run_completed] Run {data['run_id']} finished successfully!")
                 break
@@ -239,9 +266,11 @@ async def main():
             total_tokens += r.total_tokens
             total_latency += r.latency_ms
             tc_name = r.test_case.name if r.test_case else f"Test #{r.test_case_id}"
-            print(f"  * {tc_name:<20} | Status: {r.status.upper():<6} | Tokens: {r.total_tokens:<3} (Prompt: {r.prompt_tokens}, Output: {r.completion_tokens}) | Latency: {r.latency_ms:.1f}ms")
-            print(f"    Rendered: \"{r.rendered_prompt}\"")
-            print(f"    Output  : \"{r.output}\"")
+            print(
+                f"  * {tc_name:<20} | Status: {r.status.upper():<6} | Tokens: {r.total_tokens:<3} (Prompt: {r.prompt_tokens}, Output: {r.completion_tokens}) | Latency: {r.latency_ms:.1f}ms"
+            )
+            print(f'    Rendered: "{r.rendered_prompt}"')
+            print(f'    Output  : "{r.output}"')
             print(f"    Pass Checks: {r.assertion_results}\n")
 
         avg_latency = total_latency / len(results) if results else 0
@@ -249,6 +278,7 @@ async def main():
         print(f"  Total Prompt + Completion Tokens Consumed : {total_tokens}")
         print(f"  Average Execution Latency                 : {avg_latency:.2f}ms")
         print("=" * 70)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
