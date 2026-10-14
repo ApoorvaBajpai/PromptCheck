@@ -5,7 +5,7 @@ from app.api.deps import get_current_user
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import TokenResponse, UserCreate, UserLogin, UserOut
+from app.schemas.user import TokenResponse, UserCreate, UserOut
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -49,14 +49,22 @@ async def login(request: Request, db: Session = Depends(get_db)):
     content_type = request.headers.get("content-type", "")
     if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
         form = await request.form()
-        email = form.get("email") or form.get("username")
-        password = form.get("password")
+        form_email = form.get("email") or form.get("username")
+        form_password = form.get("password")
+        if isinstance(form_email, str):
+            email = form_email
+        if isinstance(form_password, str):
+            password = form_password
     else:
         try:
             body = await request.json()
             if isinstance(body, dict):
-                email = body.get("email") or body.get("username")
-                password = body.get("password")
+                body_email = body.get("email") or body.get("username")
+                body_password = body.get("password")
+                if isinstance(body_email, str):
+                    email = body_email
+                if isinstance(body_password, str):
+                    password = body_password
         except Exception:
             pass
 
