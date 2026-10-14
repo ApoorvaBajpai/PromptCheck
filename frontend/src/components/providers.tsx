@@ -139,24 +139,37 @@ export function Providers({ children }: { children: React.ReactNode }) {
           {children}
 
           {/* Toast Notification Container */}
-          <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md pointer-events-none">
+          <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-sm sm:max-w-md w-auto pointer-events-none">
             {toasts.map((toast) => (
               <div
                 key={toast.id}
-                className={`pointer-events-auto flex items-center justify-between p-3.5 rounded-xl shadow-2xl border text-sm font-medium transition-all animate-in slide-in-from-bottom-3 duration-200 ${
+                className={`pointer-events-auto flex items-start gap-3 p-3.5 rounded-xl shadow-2xl border text-xs sm:text-sm font-medium transition-all animate-in slide-in-from-bottom-3 duration-200 backdrop-blur-md ${
                   toast.type === "error"
-                    ? "bg-rose-950/90 text-rose-200 border-rose-800"
+                    ? "bg-rose-950/95 text-rose-200 border-rose-800 shadow-rose-950/50"
                     : toast.type === "success"
-                    ? "bg-emerald-950/90 text-emerald-200 border-emerald-800"
+                    ? "bg-emerald-950/95 text-emerald-200 border-emerald-800 shadow-emerald-950/50"
                     : toast.type === "warning"
-                    ? "bg-amber-950/90 text-amber-200 border-amber-800"
-                    : "bg-slate-900/90 text-slate-100 border-slate-700"
+                    ? "bg-amber-950/95 text-amber-200 border-amber-800 shadow-amber-950/50"
+                    : "bg-slate-900/95 text-slate-100 border-slate-700 shadow-slate-950/50"
                 }`}
               >
-                <span>{toast.message}</span>
+                <span className="shrink-0 text-base">
+                  {toast.type === "error"
+                    ? "⚠️"
+                    : toast.type === "success"
+                    ? "✅"
+                    : toast.type === "warning"
+                    ? "⚡"
+                    : "ℹ️"}
+                </span>
+                <span className="flex-1 break-words leading-relaxed overflow-hidden">
+                  {toast.message}
+                </span>
                 <button
+                  type="button"
                   onClick={() => removeToast(toast.id)}
-                  className="ml-3 text-xs opacity-70 hover:opacity-100 px-1"
+                  className="shrink-0 ml-1 text-slate-400 hover:text-white text-xs opacity-70 hover:opacity-100 transition p-0.5"
+                  aria-label="Dismiss toast"
                 >
                   ✕
                 </button>

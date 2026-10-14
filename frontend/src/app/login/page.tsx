@@ -25,19 +25,24 @@ export default function LoginPage() {
 
     try {
       if (mode === "signup") {
-        await api.register({ email, password, full_name: fullName });
-        showToast("Account created successfully! Signing in...", "success");
+        const regData = await api.register({ email, password, full_name: fullName });
+        const userProfile = regData.user || (await api.getCurrentUser());
+        login(regData.access_token, userProfile);
+        showToast("Account created successfully! Welcome to PromptCheck.", "success");
+        router.push("/");
+        return;
       }
 
       // Login to obtain JWT
       const authData = await api.login(email, password);
-      // Fetch user profile
-      const userProfile = await api.getCurrentUser();
+      const userProfile = authData.user || (await api.getCurrentUser());
       login(authData.access_token, userProfile);
+      showToast("Signed in successfully!", "success");
       router.push("/");
     } catch (err: any) {
-      setErrorMsg(err.message || "Authentication failed. Please check your credentials.");
-      showToast(err.message || "Authentication failed", "error");
+      const msg = err.message || "Authentication failed. Please check your credentials.";
+      setErrorMsg(msg);
+      showToast(msg, "error");
     } finally {
       setIsLoading(false);
     }
@@ -50,11 +55,14 @@ export default function LoginPage() {
     setErrorMsg(null);
     try {
       const authData = await api.login("user1@example.com", "password123");
-      const userProfile = await api.getCurrentUser();
+      const userProfile = authData.user || (await api.getCurrentUser());
       login(authData.access_token, userProfile);
+      showToast("Signed in as Demo User!", "success");
       router.push("/");
     } catch (err: any) {
-      setErrorMsg(err.message || "Failed to log in with demo credentials.");
+      const msg = err.message || "Failed to log in with demo credentials.";
+      setErrorMsg(msg);
+      showToast(msg, "error");
     } finally {
       setIsLoading(false);
     }
@@ -115,9 +123,9 @@ export default function LoginPage() {
           </div>
 
           {errorMsg && (
-            <div className="mb-4 p-3 rounded-lg bg-rose-950/60 border border-rose-800/80 text-rose-300 text-xs flex items-center gap-2">
-              <span>⚠️</span>
-              <span>{errorMsg}</span>
+            <div className="mb-5 p-3.5 rounded-xl bg-rose-950/70 border border-rose-800/80 text-rose-200 text-xs flex items-start gap-2.5 leading-relaxed break-words shadow-lg animate-in fade-in duration-200">
+              <span className="text-sm shrink-0">⚠️</span>
+              <span className="font-medium break-words overflow-hidden">{errorMsg}</span>
             </div>
           )}
 
