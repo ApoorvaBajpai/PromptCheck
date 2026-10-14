@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib -v"
+testpaths = ["backend/tests", "cli/tests"]
+pythonpath = ["backend", "cli"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true

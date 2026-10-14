@@ -1,0 +1,53 @@
+name: "PromptCheck Action"
+description: "Run PromptCheck prompt tests and evaluations as part of CI/CD workflows."
+author: "PromptCheck"
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  config:
+    description: "Path to promptcheck.yaml configuration file"
+    required: false
+    default: "promptcheck.yaml"
+  api-url:
+    description: "URL of the PromptCheck API backend"
+    required: false
+    default: "http://localhost:8000"
+  api-key:
+    description: "API Key for PromptCheck (if authentication enabled)"
+    required: false
+    default: ""
+  fail-on-regression:
+    description: "Fail the action step if score drops below baseline"
+    required: false
+    default: "true"
+
+outputs:
+  status:
+    description: "Overall check status (passed / failed)"
+  score:
+    description: "Evaluation score summary"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install PromptCheck CLI
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install promptcheck-cli
+
+    - name: Run PromptCheck
+      shell: bash
+      env:
+        PROMPTCHECK_API_URL: ${{ inputs.api-url }}
+        PROMPTCHECK_API_KEY: ${{ inputs.api-key }}
+      run: |
+        echo "Running PromptCheck with config: ${{ inputs.config }}"
+        promptcheck ping --url "${{ inputs.api-url }}"

@@ -1,0 +1,24 @@
+version: "1"
+project: "qa-bot"
+description: "Example QA bot test suite for PromptCheck"
+
+prompts:
+  - id: "system_prompt"
+    template: |
+      You are a polite, concise technical support assistant for Acme Cloud.
+      Answer customer queries accurately using only the provided facts.
+
+test_cases:
+  - name: "Greetings test"
+    input: "Hello, what services do you provide?"
+    assertions:
+      - type: "contains"
+        value: "Acme Cloud"
+      - type: "max_length"
+        value: 200
+
+  - name: "Refusal on unknown facts"
+    input: "What is Acme Cloud's stock price today?"
+    assertions:
+      - type: "does_not_contain"
+        value: "$"
