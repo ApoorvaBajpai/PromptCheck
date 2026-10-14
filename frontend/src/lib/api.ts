@@ -248,10 +248,15 @@ async function fetchWithAuth(
   if (!response.ok) {
     let errorDetail = "An unexpected error occurred.";
     try {
-      const errJson = await response.json();
-      errorDetail = errJson.detail || errJson;
+      const cloned = response.clone();
+      try {
+        const errJson = await cloned.json();
+        errorDetail = errJson.detail || errJson;
+      } catch {
+        errorDetail = await response.text();
+      }
     } catch {
-      errorDetail = await response.text();
+      errorDetail = `Request failed with status ${response.status}`;
     }
     throw new ApiError(response.status, errorDetail);
   }

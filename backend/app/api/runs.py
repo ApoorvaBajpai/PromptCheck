@@ -51,7 +51,7 @@ def _check_run_ownership(run_id: int, current_user: User, db: Session) -> Run:
     response_model=RunOut,
     status_code=status.HTTP_201_CREATED,
 )
-def create_run_for_project(
+async def create_run_for_project(
     project_id: int,
     payload: RunCreate,
     project: Project = Depends(get_user_project),
@@ -128,7 +128,15 @@ def create_run_for_project(
 
     # Trigger async execution if auto_execute is True
     if auto_execute:
-        asyncio.create_task(run_engine_executor(run_id=run.id, enable_cache=payload.enable_cache))
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                run_engine_executor(run_id=run.id, enable_cache=payload.enable_cache)
+            )
+        except RuntimeError:
+            asyncio.create_task(
+                run_engine_executor(run_id=run.id, enable_cache=payload.enable_cache)
+            )
 
     return RunOut.model_validate(run)
 
