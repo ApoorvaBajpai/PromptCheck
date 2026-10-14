@@ -13,6 +13,7 @@ import { Loader2 } from "lucide-react";
 export default function Home() {
   const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [dashboardTab, setDashboardTab] = useState<"prompts" | "tests" | "runs" | "settings">("prompts");
 
   // 1. Fetch user projects with TanStack Query
   const {
@@ -80,8 +81,6 @@ export default function Home() {
   if (!isAuthenticated) {
     return <LoginPage />;
   }
-
-  const [dashboardTab, setDashboardTab] = useState<"prompts" | "tests" | "runs" | "settings">("prompts");
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col text-slate-100">
