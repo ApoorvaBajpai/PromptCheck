@@ -115,3 +115,62 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+  docker-e2e:
+    name: Docker Build & Smoke Test
+    runs-on: ubuntu-latest
+    needs: [backend-test, frontend-test]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker images
+        run: docker compose build
+
+      - name: Start Docker services
+        run: docker compose up -d
+
+      - name: Wait for backend service health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -f -s http://localhost:8000/healthz | grep -q "healthy"; then
+              echo "Backend is healthy!"
+              exit 0
+            fi
+            echo "Waiting for backend ($i/30)..."
+            sleep 2
+          done
+          echo "Backend failed to become healthy within 60s"
+          docker compose logs backend
+          exit 1
+
+      - name: Wait for frontend service
+        run: |
+          for i in $(seq 1 30); do
+            if curl -f -s http://localhost:3000 > /dev/null; then
+              echo "Frontend is accessible!"
+              exit 0
+            fi
+            echo "Waiting for frontend ($i/30)..."
+            sleep 2
+          done
+          echo "Frontend failed to respond within 60s"
+          docker compose logs frontend
+          exit 1
+
+      - name: Verify Frontend to Backend proxy routing
+        run: |
+          # Next.js rewrites /api/* to BACKEND_INTERNAL_URL (http://backend:8000/api/*)
+          response=$(curl -f -s http://localhost:3000/api/healthz)
+          echo "Proxy health check response: $response"
+          echo "$response" | grep -q "healthy"
+
+      - name: Smoke test API endpoint
+        run: |
+          curl -f -s http://localhost:8000/ | grep -q "PromptCheck"
+          curl -f -s http://localhost:8000/docs > /dev/null
+
+      - name: Clean shutdown
+        if: always()
+        run: docker compose down -v
+

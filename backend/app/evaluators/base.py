@@ -17,6 +17,8 @@ class EvaluationResult(BaseModel):
     score: float
     reason: str
     details: dict[str, Any] = Field(default_factory=dict)
+    status: str = "evaluated"
+    is_evaluator_error: bool = False
 
 
 class EvaluationContext(BaseModel):

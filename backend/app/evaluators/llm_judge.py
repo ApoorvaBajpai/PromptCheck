@@ -119,8 +119,10 @@ class LLMJudgeEvaluator(BaseEvaluator):
                 type=self.evaluator_type,
                 passed=False,
                 score=0.0,
+                status="error",
+                is_evaluator_error=True,
                 reason="GeminiClient not provided for LLM judge evaluation.",
-                details={"error": "Missing client"},
+                details={"error": "Missing client", "error_type": "evaluator_error"},
             )
 
         if not rubric.strip():
@@ -128,8 +130,10 @@ class LLMJudgeEvaluator(BaseEvaluator):
                 type=self.evaluator_type,
                 passed=False,
                 score=0.0,
+                status="error",
+                is_evaluator_error=True,
                 reason="LLM judge evaluator requires a non-empty rubric.",
-                details={"rubric": rubric},
+                details={"rubric": rubric, "error_type": "config_error"},
             )
 
         input_ctx = config.get("input")
@@ -151,8 +155,10 @@ class LLMJudgeEvaluator(BaseEvaluator):
                 type=self.evaluator_type,
                 passed=False,
                 score=0.0,
+                status="error",
+                is_evaluator_error=True,
                 reason=f"LLM judge generation call failed: {exc}",
-                details={"error": str(exc), "model": model},
+                details={"error": str(exc), "model": model, "error_type": "provider_error"},
             )
 
         # 2. Parse and strictly validate JSON output with 1-time retry
@@ -181,6 +187,8 @@ class LLMJudgeEvaluator(BaseEvaluator):
                     type=self.evaluator_type,
                     passed=False,
                     score=0.0,
+                    status="error",
+                    is_evaluator_error=True,
                     reason=f"LLM judge failed strict validation after retry: {second_err}",
                     details={
                         "initial_error": str(first_err),
@@ -188,6 +196,7 @@ class LLMJudgeEvaluator(BaseEvaluator):
                         "raw_output": raw_text[:200],
                         "retried": True,
                         "model": model,
+                        "error_type": "invalid_judge_response",
                     },
                 )
 
@@ -204,6 +213,8 @@ class LLMJudgeEvaluator(BaseEvaluator):
             type=self.evaluator_type,
             passed=passed,
             score=round(judge_output.score, 3),
+            status="passed" if passed else "failed",
+            is_evaluator_error=False,
             reason=judge_output.reason,
             details=details_val,
         )

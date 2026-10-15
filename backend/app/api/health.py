@@ -11,6 +11,7 @@ router = APIRouter(tags=["Health"])
 
 
 @router.get("/healthz", summary="Health check verifying service and database status")
+@router.get("/api/healthz", summary="Health check verifying service and database status via API prefix")
 def healthz(db: Session = Depends(get_db)):
     """Health check endpoint that verifies database connectivity."""
     db_status = "ok"

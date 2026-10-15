@@ -2,6 +2,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
@@ -34,6 +37,35 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+class RequestBodyLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Enforces maximum payload size at the ASGI layer before buffering into memory (Phase 11).
+    Guards against denial-of-service attempts via unbounded request bodies.
+    """
+
+    def __init__(self, app, max_bytes: int = 10 * 1024 * 1024):
+        super().__init__(app)
+        self.max_bytes = max_bytes
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self.max_bytes:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": f"Request body too large ({int(content_length)} bytes). Maximum allowed size is {self.max_bytes // (1024 * 1024)}MB."
+                        },
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
+
+
+# Enforce 10MB HTTP request body limit before route handlers
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=10 * 1024 * 1024)
 
 # CORS configuration supporting cookies and credentials
 app.add_middleware(

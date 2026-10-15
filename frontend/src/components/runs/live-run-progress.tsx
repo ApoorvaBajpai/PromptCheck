@@ -27,19 +27,13 @@ export function LiveRunProgress({
   useEffect(() => {
     let isFinished = false;
     let pollTimer: any = null;
-
-    // Open Server-Sent Events stream with token for authentication
-    const token = authStorage.getToken();
-    const sseUrl = `${API_BASE_URL}/api/runs/${run.id}/stream${
-      token ? `?token=${encodeURIComponent(token)}` : ""
-    }`;
-    const eventSource = new EventSource(sseUrl);
+    let eventSource: EventSource | null = null;
 
     const finishWithRun = (updated: Run) => {
       if (isFinished) return;
       isFinished = true;
       if (pollTimer) clearInterval(pollTimer);
-      eventSource.close();
+      if (eventSource) eventSource.close();
       onCompleted(updated);
     };
 
@@ -47,7 +41,7 @@ export function LiveRunProgress({
       if (isFinished) return;
       isFinished = true;
       if (pollTimer) clearInterval(pollTimer);
-      eventSource.close();
+      if (eventSource) eventSource.close();
       onCancelled();
     };
 
@@ -85,61 +79,73 @@ export function LiveRunProgress({
     // Poll immediately on mount
     pollStatus();
 
-    eventSource.addEventListener("run_progress", (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.passed !== undefined) setPassed(data.passed);
-        if (data.failed !== undefined) setFailed(data.failed);
-        if (data.total !== undefined && data.total > 0) setTotal(data.total);
-      } catch {}
-    });
+    // Connect SSE using short-lived scoped stream token (Phase 10)
+    api
+      .getStreamToken(run.id)
+      .then(({ stream_token }) => {
+        if (isFinished) return;
+        const sseUrl = `${API_BASE_URL}/api/runs/${run.id}/stream?stream_token=${encodeURIComponent(stream_token)}`;
+        eventSource = new EventSource(sseUrl);
 
-    eventSource.addEventListener("test_result", (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.output) {
-          setRecentOutput(data.output.slice(0, 140) + "...");
-        }
-      } catch {}
-    });
+        eventSource.addEventListener("run_progress", (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.passed !== undefined) setPassed(data.passed);
+            if (data.failed !== undefined) setFailed(data.failed);
+            if (data.total !== undefined && data.total > 0) setTotal(data.total);
+          } catch {}
+        });
 
-    eventSource.addEventListener("run_completed", async () => {
-      showToast(`Run #${run.id} evaluation completed!`, "success");
-      try {
-        const updated = await api.getRun(run.id);
-        finishWithRun(updated);
-      } catch {
-        finishCancelled();
-      }
-    });
+        eventSource.addEventListener("test_result", (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.output) {
+              setRecentOutput(data.output.slice(0, 140) + "...");
+            }
+          } catch {}
+        });
 
-    eventSource.addEventListener("run_cancelled", () => {
-      showToast(`Run #${run.id} was cancelled`, "info");
-      finishCancelled();
-    });
+        eventSource.addEventListener("run_completed", async () => {
+          showToast(`Run #${run.id} evaluation completed!`, "success");
+          try {
+            const updated = await api.getRun(run.id);
+            finishWithRun(updated);
+          } catch {
+            finishCancelled();
+          }
+        });
 
-    eventSource.addEventListener("run_failed", async (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        showToast(`Run #${run.id} failed: ${data.error || "Execution error"}`, "error");
-      } catch {}
-      try {
-        const updated = await api.getRun(run.id);
-        finishWithRun(updated);
-      } catch {
-        finishCancelled();
-      }
-    });
+        eventSource.addEventListener("run_cancelled", () => {
+          showToast(`Run #${run.id} was cancelled`, "info");
+          finishCancelled();
+        });
 
-    eventSource.onerror = async () => {
-      // If SSE errors or closes, poll run status immediately
-      await pollStatus();
-    };
+        eventSource.addEventListener("run_failed", async (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            showToast(`Run #${run.id} failed: ${data.error || "Execution error"}`, "error");
+          } catch {}
+          try {
+            const updated = await api.getRun(run.id);
+            finishWithRun(updated);
+          } catch {
+            finishCancelled();
+          }
+        });
+
+        eventSource.onerror = async () => {
+          // If SSE errors or closes, poll run status immediately
+          await pollStatus();
+        };
+      })
+      .catch(() => {
+        // Fallback to polling if stream token generation is rejected
+      });
 
     return () => {
       isFinished = true;
       if (pollTimer) clearInterval(pollTimer);
-      eventSource.close();
+      if (eventSource) eventSource.close();
     };
   }, [run.id]);
 

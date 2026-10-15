@@ -209,7 +209,7 @@ async def execute_test_case(
                             gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in sig.parameters}
                     except (ValueError, TypeError):
                         pass
-                response = await client.generate_content(**gen_kwargs)
+                response = await client.generate_content(**gen_kwargs)  # type: ignore[arg-type]
                 break
             except GeminiAuthError as auth_err:
                 # Do not retry auth errors
@@ -306,13 +306,30 @@ async def execute_test_case(
             ),
         )
 
+        has_eval_error = any(
+            a.get("is_evaluator_error") or a.get("status") == "error" for a in assertion_res
+        )
+        if has_eval_error:
+            test_status = "error"
+            eval_err_msg = next(
+                (
+                    a.get("reason")
+                    for a in assertion_res
+                    if a.get("is_evaluator_error") or a.get("status") == "error"
+                ),
+                "Evaluator error",
+            )
+        else:
+            test_status = "passed" if passed else "failed"
+            eval_err_msg = None
+
         return {
             "test_case_id": test_case_id,
             "repeat_index": repeat_index,
-            "status": "passed" if passed else "failed",
+            "status": test_status,
             "rendered_prompt": rendered,
             "output": response.text,
-            "error_message": None,
+            "error_message": eval_err_msg,
             "latency_ms": response.latency_ms,
             "prompt_tokens": response.prompt_tokens,
             "completion_tokens": response.completion_tokens,

@@ -477,4 +477,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data || { set_as_project_baseline: true }),
     }),
+
+  getStreamToken: (
+    runId: number
+  ): Promise<{ stream_token: string; expires_in: number }> =>
+    fetchWithAuth(`/api/runs/${runId}/stream-token`, { method: "POST" }),
 };

@@ -332,3 +332,75 @@ def test_gemini_api_key_validation_invalid_and_quota(client, auth_headers_user1,
     assert "AIzaSyFakeValidKeyWithQuotaExhaustion" not in str(data)
     assert data["masked_key"].startswith("AIzaSy...")
 
+
+# 7. Evaluator Error Semantics vs Model Test Failure Distinction (Phase 8)
+@pytest.mark.asyncio
+async def test_llm_judge_error_vs_failure_distinction():
+    """Verify evaluator distinguishes infrastructure/provider errors from model test failures."""
+    evaluator = LLMJudgeEvaluator()
+    config = {"rubric": "Answer must be polite."}
+
+    # A. Missing client -> Evaluator/Config error
+    res_no_client = await evaluator.evaluate(actual_output="Hello", config=config, client=None)
+    assert res_no_client.status == "error"
+    assert res_no_client.is_evaluator_error is True
+    assert res_no_client.details["error_type"] == "evaluator_error"
+
+    # B. Provider API failure -> Provider error
+    failing_client = FakeGeminiClient()
+    failing_client.set_fail_with_500(count=2)
+    res_provider_err = await evaluator.evaluate(actual_output="Hello", config=config, client=failing_client)
+    assert res_provider_err.status == "error"
+    assert res_provider_err.is_evaluator_error is True
+    assert res_provider_err.details["error_type"] == "provider_error"
+
+    # C. Malformed JSON after retry -> Invalid judge response error
+    bad_json_client = FakeGeminiClient()
+    bad_json_client.set_judge_response("not a valid json output")
+    res_json_err = await evaluator.evaluate(actual_output="Hello", config=config, client=bad_json_client)
+    assert res_json_err.status == "error"
+    assert res_json_err.is_evaluator_error is True
+    assert res_json_err.details["error_type"] == "invalid_judge_response"
+
+    # D. Model quality failure (Judge evaluated validly and rejected output)
+    valid_rejection_client = FakeGeminiClient()
+    valid_rejection_client.set_judge_response(
+        {"passed": False, "score": 0.2, "reason": "Customer was insulted.", "details": {}}
+    )
+    res_fail = await evaluator.evaluate(actual_output="Get lost.", config=config, client=valid_rejection_client)
+    assert res_fail.status == "failed"
+    assert res_fail.is_evaluator_error is False
+    assert res_fail.passed is False
+    assert "insulted" in res_fail.reason
+
+
+# 8. Query-String Token Authentication Rejection (Phase 10)
+def test_query_string_token_rejected(client, user1):
+    """Verify that passing tokens via ?token= query parameter is strictly rejected."""
+    from app.core.security import create_access_token
+
+    token = create_access_token(subject=user1.id)
+
+    # 1. API route with ?token= must return 401
+    res = client.get(f"/api/projects?token={token}")
+    assert res.status_code == 401
+    assert "Authentication required" in res.json()["detail"]
+
+    # 2. SSE stream with long-lived access token as stream_token must be rejected
+    res_stream = client.get(f"/api/runs/1/stream?stream_token={token}")
+    assert res_stream.status_code in (401, 403)
+
+
+# 9. Request Body Size Limit Middleware (Phase 11)
+def test_request_body_size_limit_413(client):
+    """Verify ASGI middleware rejects payloads exceeding maximum size with HTTP 413."""
+    # Send request with oversized content-length header (> 10MB)
+    res = client.post(
+        "/api/projects",
+        headers={"Content-Length": "15000000", "Content-Type": "application/json"},
+        content=b"{}",
+    )
+    assert res.status_code == 413
+    assert "Request body too large" in res.json()["detail"]
+
+
