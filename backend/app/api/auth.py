@@ -5,7 +5,7 @@ from app.api.deps import get_current_user
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.database import get_db
 from app.models.user import User
-from app.schemas.user import TokenResponse, UserCreate, UserLogin, UserOut
+from app.schemas.user import TokenResponse, UserCreate, UserOut
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -60,7 +60,7 @@ async def login(request: Request, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    if not email or not password:
+    if not isinstance(email, str) or not isinstance(password, str) or not email or not password:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Email and password are required.",
