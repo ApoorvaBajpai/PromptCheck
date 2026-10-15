@@ -190,7 +190,7 @@ async def execute_test_case(
             await rate_limiter.acquire()
             try:
                 gen_fn = getattr(client, "generate_content", None)
-                gen_kwargs = {
+                gen_kwargs: dict[str, Any] = {
                     "prompt": rendered,
                     "model": model,
                     "temperature": temperature,
