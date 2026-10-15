@@ -556,7 +556,10 @@ def apply_regression_analysis_to_run(
     """
     Loads run and candidate results from DB, resolves baseline, runs analysis,
     updates run_results records with classification & score, and stores summary on run.
+    Accurately aggregates multiple repeated executions per test case for flakiness analysis.
     """
+    from collections import defaultdict
+
     run = db.query(Run).filter(Run.id == run_id).first()
     if not run:
         raise ValueError(f"Run #{run_id} not found.")
@@ -568,16 +571,39 @@ def apply_regression_analysis_to_run(
     cand_records = (
         db.query(RunResult).filter(RunResult.run_id == run.id).order_by(RunResult.id.asc()).all()
     )
-    cand_inputs: list[TestComparisonInput] = []
+    cand_by_test = defaultdict(list)
     for cr in cand_records:
+        cand_by_test[cr.test_case_id].append(cr)
+
+    cand_inputs: list[TestComparisonInput] = []
+    for tid, recs in cand_by_test.items():
+        total_reps = len(recs)
+        passed_reps = sum(1 for r in recs if r.status == "passed")
+        any_error = any(r.status == "error" for r in recs)
+        any_cancelled = any(r.status == "cancelled" for r in recs)
+
+        if any_error:
+            status_val = "error"
+        elif any_cancelled:
+            status_val = "cancelled"
+        elif passed_reps == total_reps:
+            status_val = "passed"
+        else:
+            status_val = "failed"
+
+        scores = [r.score if r.score is not None else 1.0 for r in recs]
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+
         cand_inputs.append(
             TestComparisonInput(
-                test_case_id=cr.test_case_id,
-                status=cr.status,
-                score=cr.score if cr.score is not None else 1.0,
-                latency_ms=cr.latency_ms,
-                error_message=cr.error_message,
-                assertion_results=cr.assertion_results or [],
+                test_case_id=tid,
+                status=status_val,
+                score=round(avg_score, 4),
+                latency_ms=sum(r.latency_ms for r in recs) / len(recs),
+                error_message=recs[0].error_message,
+                assertion_results=recs[0].assertion_results or [],
+                repeats_passed=passed_reps,
+                repeats_total=total_reps,
             )
         )
 
@@ -590,17 +616,41 @@ def apply_regression_analysis_to_run(
             .order_by(RunResult.id.asc())
             .all()
         )
-        base_inputs = [
-            TestComparisonInput(
-                test_case_id=br.test_case_id,
-                status=br.status,
-                score=br.score if br.score is not None else 1.0,
-                latency_ms=br.latency_ms,
-                error_message=br.error_message,
-                assertion_results=br.assertion_results or [],
+        base_by_test = defaultdict(list)
+        for br in base_records:
+            base_by_test[br.test_case_id].append(br)
+
+        base_inputs = []
+        for tid, recs in base_by_test.items():
+            total_reps = len(recs)
+            passed_reps = sum(1 for r in recs if r.status == "passed")
+            any_error = any(r.status == "error" for r in recs)
+            any_cancelled = any(r.status == "cancelled" for r in recs)
+
+            if any_error:
+                status_val = "error"
+            elif any_cancelled:
+                status_val = "cancelled"
+            elif passed_reps == total_reps:
+                status_val = "passed"
+            else:
+                status_val = "failed"
+
+            scores = [r.score if r.score is not None else 1.0 for r in recs]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+
+            base_inputs.append(
+                TestComparisonInput(
+                    test_case_id=tid,
+                    status=status_val,
+                    score=round(avg_score, 4),
+                    latency_ms=sum(r.latency_ms for r in recs) / len(recs),
+                    error_message=recs[0].error_message,
+                    assertion_results=recs[0].assertion_results or [],
+                    repeats_passed=passed_reps,
+                    repeats_total=total_reps,
+                )
             )
-            for br in base_records
-        ]
 
     # Run analysis
     outputs, summary = compute_regression_analysis(
@@ -615,7 +665,6 @@ def apply_regression_analysis_to_run(
         out = output_map.get(cr.test_case_id)
         if out:
             cr.classification = out.classification
-            cr.score = out.score
             cr.comparison_details = {
                 "score_delta": out.score_delta,
                 "reason": out.reason,

@@ -12,9 +12,9 @@ export default function LoginPage() {
   const { showToast } = useToast();
 
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("user1@example.com");
-  const [password, setPassword] = useState("password123");
-  const [fullName, setFullName] = useState("Demo Engineer");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 

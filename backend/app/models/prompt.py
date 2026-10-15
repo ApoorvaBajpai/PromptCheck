@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -57,6 +57,15 @@ class PromptVersion(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     commit_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Execution configuration
+    model: Mapped[str] = mapped_column(String(64), default="gemini-2.5-flash", nullable=False)
+    system_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    temperature: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    top_p: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_mime_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

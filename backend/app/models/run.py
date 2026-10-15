@@ -44,6 +44,10 @@ class Run(Base):
         nullable=True,
     )
 
+    # Repeat / flakiness count and idempotency
+    repeat_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+
     total_tests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     passed_tests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failed_tests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -83,7 +87,9 @@ class Run(Base):
 
 class RunResult(Base):
     __tablename__ = "run_results"
-    __table_args__ = (UniqueConstraint("run_id", "test_case_id", name="uq_run_test_case"),)
+    __table_args__ = (
+        UniqueConstraint("run_id", "test_case_id", "repeat_index", name="uq_run_test_case_repeat"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[int] = mapped_column(
@@ -98,6 +104,7 @@ class RunResult(Base):
         index=True,
         nullable=False,
     )
+    repeat_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # Status: pending, running, passed, failed, error, cancelled
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True, nullable=False)
@@ -154,6 +161,11 @@ class OutputCache(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

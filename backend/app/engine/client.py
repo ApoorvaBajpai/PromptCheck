@@ -1,3 +1,5 @@
+import math
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -6,11 +8,23 @@ from typing import Any
 import httpx
 
 
+def redact_api_key(text: str, api_key: str | None = None) -> str:
+    """Sanitize and redact API keys from strings, exception messages, and URLs."""
+    if not text:
+        return ""
+    clean = text
+    if api_key and api_key.strip():
+        clean = clean.replace(api_key, "[REDACTED_API_KEY]")
+    clean = re.sub(r"key=[A-Za-z0-9_\-]+", "key=[REDACTED]", clean)
+    clean = re.sub(r"AIza[0-9A-Za-z-_]{35}", "[REDACTED_API_KEY]", clean)
+    return clean
+
+
 class GeminiError(Exception):
     """Base error for Gemini API client interactions."""
 
     def __init__(self, message: str, status_code: int = 500):
-        super().__init__(message)
+        super().__init__(redact_api_key(message))
         self.status_code = status_code
 
 
@@ -22,14 +36,14 @@ class GeminiRateLimitError(GeminiError):
 
 
 class GeminiServerError(GeminiError):
-    """Raised when Gemini returns a 5xx server error."""
+    """Raised when Gemini returns a 5xx server error or network failure."""
 
     def __init__(self, message: str = "Gemini API server error", status_code: int = 500):
         super().__init__(message, status_code=status_code)
 
 
 class GeminiAuthError(GeminiError):
-    """Raised when Gemini rejects the API key (HTTP 400 or 403)."""
+    """Raised when Gemini rejects the API key (HTTP 400 or 403 with invalid credentials)."""
 
     def __init__(self, message: str = "Invalid or missing Gemini API key"):
         super().__init__(message, status_code=403)
@@ -53,6 +67,10 @@ class BaseGeminiClient(ABC):
         prompt: str,
         model: str = "gemini-2.5-flash",
         temperature: float = 1.0,
+        system_instruction: str | None = None,
+        top_p: float | None = None,
+        max_output_tokens: int | None = None,
+        response_mime_type: str | None = None,
     ) -> GeminiResponse:
         """Generate content from the model."""
         pass
@@ -65,6 +83,10 @@ class BaseGeminiClient(ABC):
     ) -> list[float]:
         """Generate text embedding vector."""
         pass
+
+    async def validate_key(self) -> bool:
+        """Validate key against the service."""
+        return True
 
 
 class GeminiClient(BaseGeminiClient):
@@ -80,6 +102,10 @@ class GeminiClient(BaseGeminiClient):
         prompt: str,
         model: str = "gemini-2.5-flash",
         temperature: float = 1.0,
+        system_instruction: str | None = None,
+        top_p: float | None = None,
+        max_output_tokens: int | None = None,
+        response_mime_type: str | None = None,
     ) -> GeminiResponse:
         if not self.api_key or self.api_key.strip() == "":
             raise GeminiAuthError("API key cannot be empty")
@@ -88,6 +114,7 @@ class GeminiClient(BaseGeminiClient):
             "gemini-2.5-flash" if model in ("gemini-1.5-flash", "gemini-flash") else model
         )
         url = f"{self.base_url}/{target_model}:generateContent?key={self.api_key}"
+
         payload: dict[str, Any] = {
             "contents": [
                 {
@@ -95,8 +122,24 @@ class GeminiClient(BaseGeminiClient):
                 }
             ]
         }
+
+        if system_instruction and system_instruction.strip():
+            payload["systemInstruction"] = {
+                "parts": [{"text": system_instruction.strip()}],
+            }
+
+        generation_config: dict[str, Any] = {}
         if temperature != 1.0:
-            payload["generationConfig"] = {"temperature": temperature}
+            generation_config["temperature"] = temperature
+        if top_p is not None:
+            generation_config["topP"] = top_p
+        if max_output_tokens is not None:
+            generation_config["maxOutputTokens"] = max_output_tokens
+        if response_mime_type:
+            generation_config["responseMimeType"] = response_mime_type
+
+        if generation_config:
+            payload["generationConfig"] = generation_config
 
         start_time = time.perf_counter()
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -105,21 +148,26 @@ class GeminiClient(BaseGeminiClient):
             except httpx.TimeoutException as exc:
                 raise GeminiServerError("Gemini API request timed out", status_code=504) from exc
             except httpx.RequestError as exc:
+                clean_err = redact_api_key(str(exc), self.api_key)
                 raise GeminiServerError(
-                    f"Network error connecting to Gemini: {exc}", status_code=502
+                    f"Network error connecting to Gemini: {clean_err}", status_code=502
                 ) from exc
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
+        clean_resp = redact_api_key(response.text, self.api_key)
 
         if response.status_code == 429:
-            raise GeminiRateLimitError(response.text)
+            raise GeminiRateLimitError(clean_resp)
         elif response.status_code in (400, 401, 403):
-            raise GeminiAuthError(f"Authentication failed: {response.text}")
+            # Check if this 400 is actually quota exhaustion or invalid argument vs bad key
+            if "RESOURCE_EXHAUSTED" in clean_resp or "quota" in clean_resp.lower():
+                raise GeminiRateLimitError(clean_resp)
+            raise GeminiAuthError(f"Authentication failed: {clean_resp}")
         elif response.status_code >= 500:
-            raise GeminiServerError(response.text, status_code=response.status_code)
+            raise GeminiServerError(clean_resp, status_code=response.status_code)
         elif response.status_code != 200:
             raise GeminiError(
-                f"Unexpected response ({response.status_code}): {response.text}",
+                f"Unexpected response ({response.status_code}): {clean_resp}",
                 status_code=response.status_code,
             )
 
@@ -147,6 +195,36 @@ class GeminiClient(BaseGeminiClient):
             latency_ms=round(latency_ms, 2),
         )
 
+    async def validate_key(self) -> bool:
+        """
+        Validate this API key with a minimal probe request.
+        Raises GeminiAuthError, GeminiRateLimitError, or GeminiServerError accordingly.
+        """
+        # Minimal probe to gemini-2.5-flash
+        url = f"{self.base_url}/gemini-2.5-flash:generateContent?key={self.api_key}"
+        payload = {"contents": [{"parts": [{"text": "ping"}]}], "generationConfig": {"maxOutputTokens": 1}}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.post(url, json=payload)
+            except httpx.TimeoutException as exc:
+                raise GeminiServerError("Validation request timed out", status_code=504) from exc
+            except httpx.RequestError as exc:
+                clean_err = redact_api_key(str(exc), self.api_key)
+                raise GeminiServerError(f"Network error during key validation: {clean_err}", status_code=502) from exc
+
+        clean_resp = redact_api_key(response.text, self.api_key)
+        if response.status_code == 200:
+            return True
+        elif response.status_code == 429 or "RESOURCE_EXHAUSTED" in clean_resp or "quota" in clean_resp.lower():
+            # Quota exhausted: The key is VALID, but quota is reached
+            raise GeminiRateLimitError("Gemini quota exceeded (key is valid but currently rate-limited or quota exhausted)")
+        elif response.status_code in (400, 401, 403):
+            raise GeminiAuthError("Invalid Gemini API key: authentication failed")
+        elif response.status_code >= 500:
+            raise GeminiServerError("Gemini server error during validation", status_code=response.status_code)
+        else:
+            raise GeminiError(f"Unexpected validation response ({response.status_code})", status_code=response.status_code)
+
     async def embed_content(
         self,
         text: str,
@@ -173,19 +251,21 @@ class GeminiClient(BaseGeminiClient):
             except httpx.TimeoutException as exc:
                 raise GeminiServerError("Gemini embedding timed out", status_code=504) from exc
             except httpx.RequestError as exc:
+                clean_err = redact_api_key(str(exc), self.api_key)
                 raise GeminiServerError(
-                    f"Network error during embedding: {exc}", status_code=502
+                    f"Network error during embedding: {clean_err}", status_code=502
                 ) from exc
 
+        clean_resp = redact_api_key(response.text, self.api_key)
         if response.status_code == 429:
-            raise GeminiRateLimitError(response.text)
+            raise GeminiRateLimitError(clean_resp)
         elif response.status_code in (400, 401, 403):
-            raise GeminiAuthError(f"Authentication failed: {response.text}")
+            raise GeminiAuthError(f"Authentication failed: {clean_resp}")
         elif response.status_code >= 500:
-            raise GeminiServerError(response.text, status_code=response.status_code)
+            raise GeminiServerError(clean_resp, status_code=response.status_code)
         elif response.status_code != 200:
             raise GeminiError(
-                f"Unexpected embedding error ({response.status_code}): {response.text}",
+                f"Unexpected embedding error ({response.status_code}): {clean_resp}",
                 status_code=response.status_code,
             )
 
@@ -213,10 +293,14 @@ class FakeGeminiClient(BaseGeminiClient):
         self.fail_embedding_count = 0
         self.fail_judge_json_once = False
         self.is_invalid_api_key = False
+        self.is_quota_exhausted = False
+        self.is_timeout = False
 
     def set_response_for_prompt(self, prompt_substring: str, response: str) -> None:
         """Map a substring to a specific response string."""
         self.prompt_responses[prompt_substring] = response
+
+    set_response = set_response_for_prompt
 
     def set_judge_response(self, response: dict[str, Any] | str) -> None:
         """Convenience method to set response for LLM judge prompts."""
@@ -252,26 +336,55 @@ class FakeGeminiClient(BaseGeminiClient):
         """Simulate invalid API key rejection."""
         self.is_invalid_api_key = is_invalid
 
+    def set_quota_exhausted(self, is_exhausted: bool = True) -> None:
+        self.is_quota_exhausted = is_exhausted
+
+    def set_timeout(self, is_timeout: bool = True) -> None:
+        self.is_timeout = is_timeout
+
+    async def validate_key(self) -> bool:
+        if self.is_timeout:
+            raise GeminiServerError("Simulated validation timeout", status_code=504)
+        if self.is_invalid_api_key:
+            raise GeminiAuthError("Invalid Gemini API key provided")
+        if self.is_quota_exhausted:
+            raise GeminiRateLimitError("Quota exhausted for this key")
+        if self.fail_500_count > 0:
+            raise GeminiServerError("Simulated server error during key check", status_code=500)
+        return True
+
     async def generate_content(
         self,
         prompt: str,
         model: str = "gemini-2.5-flash",
         temperature: float = 1.0,
+        system_instruction: str | None = None,
+        top_p: float | None = None,
+        max_output_tokens: int | None = None,
+        response_mime_type: str | None = None,
     ) -> GeminiResponse:
         self.calls.append(
             {
                 "prompt": prompt,
                 "model": model,
                 "temperature": temperature,
+                "system_instruction": system_instruction,
+                "top_p": top_p,
+                "max_output_tokens": max_output_tokens,
+                "response_mime_type": response_mime_type,
                 "timestamp": time.time(),
             }
         )
 
+        if self.is_timeout:
+            raise GeminiServerError("Simulated request timeout", status_code=504)
+
         if self.is_invalid_api_key:
             raise GeminiAuthError("Invalid Gemini API key provided")
 
-        if self.fail_429_count > 0:
-            self.fail_429_count -= 1
+        if self.is_quota_exhausted or self.fail_429_count > 0:
+            if self.fail_429_count > 0:
+                self.fail_429_count -= 1
             raise GeminiRateLimitError("Simulated 429 Too Many Requests")
 
         if self.fail_500_count > 0:
@@ -299,7 +412,6 @@ class FakeGeminiClient(BaseGeminiClient):
                 text = resp
                 break
 
-        # Simulate tokens based on content length
         prompt_tokens = max(1, len(prompt.split()) * 2)
         completion_tokens = max(1, len(text.split()) * 2)
         total_tokens = prompt_tokens + completion_tokens
@@ -317,8 +429,6 @@ class FakeGeminiClient(BaseGeminiClient):
         text: str,
         model: str = "gemini-embedding-001",
     ) -> list[float]:
-        import math
-
         if self.fail_embedding_count > 0:
             self.fail_embedding_count -= 1
             raise GeminiServerError("Simulated embedding failure", status_code=500)
@@ -326,7 +436,6 @@ class FakeGeminiClient(BaseGeminiClient):
         if text in self.embeddings:
             return self.embeddings[text]
 
-        # Deterministic normalized unit vector from string hash
         dim = 16
         vec = [0.0] * dim
         words = text.lower().split()

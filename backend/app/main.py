@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,6 +12,17 @@ from app.api.runs import router as runs_router
 from app.api.test_cases import router as test_cases_router
 from app.api.test_cases import standalone_tests_router
 from app.config import settings
+from app.engine.worker import worker_instance
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start durable background queue worker
+    worker_instance.start()
+    yield
+    # Shutdown: Cleanly terminate worker tasks
+    await worker_instance.stop()
+
 
 app = FastAPI(
     title=settings.app_name,
@@ -19,12 +32,13 @@ app = FastAPI(
     ),
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# CORS configuration
+# CORS configuration supporting cookies and credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|frontend)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

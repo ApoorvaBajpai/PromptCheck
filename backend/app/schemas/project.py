@@ -24,6 +24,7 @@ class ProjectApiKeyIn(BaseModel):
 class ProjectApiKeyOut(BaseModel):
     has_key: bool
     masked_key: str | None = None
+    warning: str | None = None
 
 
 class ProjectOut(BaseModel):

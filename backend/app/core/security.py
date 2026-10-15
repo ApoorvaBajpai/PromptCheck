@@ -1,3 +1,4 @@
+import base64
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -33,6 +34,7 @@ def create_access_token(subject: str | Any, expires_delta: timedelta | None = No
         "exp": expire,
         "sub": str(subject),
         "iat": datetime.now(UTC),
+        "type": "access",
     }
     encoded_jwt = jwt.encode(
         to_encode,
@@ -44,24 +46,67 @@ def create_access_token(subject: str | Any, expires_delta: timedelta | None = No
 
 def decode_access_token(token: str) -> dict[str, Any]:
     """Decode and validate a JWT access token."""
-    return jwt.decode(
+    payload = jwt.decode(
         token,
         settings.secret_key,
         algorithms=[settings.jwt_algorithm],
     )
+    if payload.get("type") and payload.get("type") != "access":
+        raise ValueError("Invalid token type: expected access token")
+    return payload
+
+
+def create_stream_token(user_id: int, run_id: int, expires_seconds: int = 60) -> str:
+    """
+    Create a short-lived (e.g. 60-second), scoped token specifically for SSE event streaming.
+    Prevents long-lived bearer tokens from being exposed in URLs or query strings.
+    """
+    expire = datetime.now(UTC) + timedelta(seconds=expires_seconds)
+    to_encode = {
+        "sub": str(user_id),
+        "run_id": run_id,
+        "exp": expire,
+        "iat": datetime.now(UTC),
+        "type": "stream",
+    }
+    return jwt.encode(
+        to_encode,
+        settings.secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def decode_stream_token(token: str) -> dict[str, Any]:
+    """Decode and validate a short-lived SSE stream token."""
+    payload = jwt.decode(
+        token,
+        settings.secret_key,
+        algorithms=[settings.jwt_algorithm],
+    )
+    if payload.get("type") != "stream":
+        raise ValueError("Invalid token type: expected stream token")
+    return payload
 
 
 def _get_fernet() -> Fernet:
-    """Instantiate Fernet cipher using the configured encryption key."""
+    """
+    Instantiate Fernet cipher using configured encryption key.
+    Fails fast with explicit error if key is missing or invalid.
+    Never silently derives replacement key.
+    """
+    if not settings.encryption_key:
+        raise ValueError("ENCRYPTION_KEY is not configured")
     try:
-        return Fernet(settings.encryption_key.encode("utf-8"))
-    except Exception:
-        # Fallback if key is invalid format (ensure 32 url-safe base64 bytes)
-        import base64
-        import hashlib
-
-        derived = base64.urlsafe_b64encode(hashlib.sha256(settings.secret_key.encode()).digest())
-        return Fernet(derived)
+        raw_key = settings.encryption_key.encode("utf-8")
+        # Validate format
+        decoded = base64.urlsafe_b64decode(raw_key)
+        if len(decoded) != 32:
+            raise ValueError(f"Fernet key must decode to 32 bytes, got {len(decoded)}")
+        return Fernet(raw_key)
+    except Exception as exc:
+        raise ValueError(
+            f"Invalid ENCRYPTION_KEY: failed to initialize Fernet cipher ({exc})"
+        ) from exc
 
 
 def encrypt_api_key(plain_key: str) -> str:

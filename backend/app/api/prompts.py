@@ -3,11 +3,10 @@ import hashlib
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_user_project
+from app.api.deps import get_user_project, get_user_prompt
 from app.database import get_db
 from app.models.project import Project
 from app.models.prompt import Prompt, PromptVersion
-from app.models.user import User
 from app.schemas.prompt import (
     PromptCreate,
     PromptOut,
@@ -72,6 +71,12 @@ def create_prompt(
             content=init_content,
             content_hash=content_hash,
             commit_message=payload.commit_message or "Initial version",
+            model=payload.model,
+            system_instruction=payload.system_instruction,
+            temperature=payload.temperature,
+            top_p=payload.top_p,
+            max_output_tokens=payload.max_output_tokens,
+            response_mime_type=payload.response_mime_type,
         )
         db.add(v1)
         db.commit()
@@ -176,7 +181,7 @@ def create_prompt_version(
 ):
     """
     Create a new immutable prompt version.
-    Invariant 2: Identical prompt content must be deduplicated using SHA-256.
+    Invariant 2: Identical prompt content and configuration must be deduplicated using SHA-256.
     """
     prompt = (
         db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.project_id == project.id).first()
@@ -217,6 +222,12 @@ def create_prompt_version(
         content=payload.content,
         content_hash=content_hash,
         commit_message=payload.commit_message,
+        model=payload.model,
+        system_instruction=payload.system_instruction,
+        temperature=payload.temperature,
+        top_p=payload.top_p,
+        max_output_tokens=payload.max_output_tokens,
+        response_mime_type=payload.response_mime_type,
     )
     db.add(version)
     db.commit()
@@ -256,7 +267,7 @@ def get_prompt_version(
     project: Project = Depends(get_user_project),
     db: Session = Depends(get_db),
 ):
-    """Get specific immutable version of a prompt."""
+    """Get single immutable version of a prompt."""
     prompt = (
         db.query(Prompt).filter(Prompt.id == prompt_id, Prompt.project_id == project.id).first()
     )
@@ -291,24 +302,10 @@ standalone_prompt_router = APIRouter(tags=["Prompts"])
     "/api/prompts/{prompt_id}/versions", response_model=list[PromptVersionOut]
 )
 def list_prompt_versions_standalone(
-    prompt_id: int,
-    current_user: User = Depends(get_current_user),
+    prompt: Prompt = Depends(get_user_prompt),
     db: Session = Depends(get_db),
 ):
-    """List all immutable versions of a prompt directly by prompt ID."""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
-    if not prompt:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Prompt not found",
-        )
-    project = db.query(Project).filter(Project.id == prompt.project_id).first()
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Prompt not found",
-        )
-
+    """List all immutable versions of a prompt directly by prompt ID with ownership validation."""
     versions = (
         db.query(PromptVersion)
         .filter(PromptVersion.prompt_id == prompt.id)
@@ -324,25 +321,11 @@ def list_prompt_versions_standalone(
     status_code=status.HTTP_201_CREATED,
 )
 def create_prompt_version_standalone(
-    prompt_id: int,
     payload: PromptVersionCreate,
-    current_user: User = Depends(get_current_user),
+    prompt: Prompt = Depends(get_user_prompt),
     db: Session = Depends(get_db),
 ):
-    """Create a new immutable prompt version directly by prompt ID."""
-    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
-    if not prompt:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Prompt not found",
-        )
-    project = db.query(Project).filter(Project.id == prompt.project_id).first()
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Prompt not found",
-        )
-
+    """Create a new immutable prompt version directly by prompt ID with ownership validation."""
     content_hash = _calculate_content_hash(payload.content)
 
     existing_version = (
@@ -370,6 +353,12 @@ def create_prompt_version_standalone(
         content=payload.content,
         content_hash=content_hash,
         commit_message=payload.commit_message,
+        model=payload.model,
+        system_instruction=payload.system_instruction,
+        temperature=payload.temperature,
+        top_p=payload.top_p,
+        max_output_tokens=payload.max_output_tokens,
+        response_mime_type=payload.response_mime_type,
     )
     db.add(version)
     db.commit()

@@ -12,6 +12,12 @@ class RunCreate(BaseModel):
     baseline_run_id: int | None = Field(
         default=None, description="Optional explicit baseline run ID for regression analysis"
     )
+    repeat_count: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Number of times each test should be executed for flakiness / stability analysis",
+    )
 
 
 class BaselineSetRequest(BaseModel):
@@ -29,6 +35,7 @@ class RunResultOut(BaseModel):
     id: int
     run_id: int
     test_case_id: int
+    repeat_index: int = 0
     status: str
     rendered_prompt: str | None = None
     output: str | None = None
@@ -53,6 +60,7 @@ class RunOut(BaseModel):
     project_id: int
     prompt_version_id: int
     baseline_run_id: int | None = None
+    repeat_count: int = 1
     status: str
     total_tests: int
     passed_tests: int
@@ -70,4 +78,3 @@ class RunOut(BaseModel):
 
 class RunDetailOut(RunOut):
     results: list[RunResultOut] = Field(default_factory=list)
-

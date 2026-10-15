@@ -1,11 +1,13 @@
 import asyncio
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_user_project
+from app.core.security import create_stream_token, decode_access_token, decode_stream_token
 from app.database import get_db
 from app.engine.events import broadcaster
 from app.engine.regression import apply_regression_analysis_to_run
@@ -27,6 +29,7 @@ router = APIRouter(tags=["Runs"])
 
 MAX_TEST_CASES_PER_RUN = 200
 MAX_DAILY_RUNS_PER_PROJECT = 500
+security_scheme = HTTPBearer(auto_error=False)
 
 
 def _check_run_ownership(run_id: int, current_user: User, db: Session) -> Run:
@@ -54,12 +57,49 @@ def _check_run_ownership(run_id: int, current_user: User, db: Session) -> Run:
 async def create_run_for_project(
     project_id: int,
     payload: RunCreate,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     project: Project = Depends(get_user_project),
     db: Session = Depends(get_db),
     auto_execute: bool = Query(True, description="Immediately queue and execute run"),
 ):
-    """Create a new evaluation run for a prompt version and active test cases."""
-    # 1. Verify prompt version exists under project
+    """
+    Create a new evaluation run with:
+    - Idempotency-Key duplicate prevention (Requirement 15)
+    - Concurrency protection: one active run per project (Requirement 15)
+    - Repeat execution configuration for flakiness analysis (Requirement 10)
+    """
+    # 1. Idempotency Key check: Return existing run if duplicate key received
+    if idempotency_key and idempotency_key.strip():
+        existing_run = (
+            db.query(Run)
+            .filter(
+                Run.project_id == project.id,
+                Run.idempotency_key == idempotency_key.strip(),
+            )
+            .first()
+        )
+        if existing_run:
+            return RunOut.model_validate(existing_run)
+
+    # 2. Prevent concurrent active runs on the same project
+    active_run = (
+        db.query(Run)
+        .filter(
+            Run.project_id == project.id,
+            Run.status.in_(("queued", "running")),
+        )
+        .first()
+    )
+    if active_run:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"An active run #{active_run.id} is already in progress ({active_run.status}) "
+                f"for project '{project.name}'. Please wait for it to complete or cancel it."
+            ),
+        )
+
+    # 3. Verify prompt version exists under project
     prompt_version = (
         db.query(PromptVersion)
         .join(PromptVersion.prompt)
@@ -75,7 +115,7 @@ async def create_run_for_project(
             detail="Prompt version does not belong to this project",
         )
 
-    # 2. Check Daily Quota Caps (Requirement 19)
+    # 4. Check Daily Quota Caps
     today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     today_runs_count = (
         db.query(Run).filter(Run.project_id == project.id, Run.created_at >= today_start).count()
@@ -86,7 +126,7 @@ async def create_run_for_project(
             detail=f"Daily run quota exceeded ({MAX_DAILY_RUNS_PER_PROJECT} runs per day)",
         )
 
-    # 3. Check test case count cap (Requirement 19)
+    # 5. Check test case count cap
     test_count = (
         db.query(TestCase)
         .filter(TestCase.project_id == project.id, TestCase.is_active == True)  # noqa: E712
@@ -101,7 +141,7 @@ async def create_run_for_project(
             ),
         )
 
-    # 4. Check explicit baseline if supplied
+    # 6. Check explicit baseline if supplied
     baseline_id = payload.baseline_run_id
     if baseline_id is not None:
         base_run = (
@@ -115,12 +155,15 @@ async def create_run_for_project(
                 detail=f"Specified baseline run #{baseline_id} does not exist or is not completed.",
             )
 
+    repeat_count = max(1, min(10, payload.repeat_count))
     run = Run(
         project_id=project.id,
         prompt_version_id=prompt_version.id,
         baseline_run_id=baseline_id,
         status="queued",
         total_tests=test_count,
+        repeat_count=repeat_count,
+        idempotency_key=idempotency_key.strip() if idempotency_key else None,
     )
     db.add(run)
     db.commit()
@@ -167,6 +210,7 @@ def get_run_details(
         project_id=run.project_id,
         prompt_version_id=run.prompt_version_id,
         baseline_run_id=run.baseline_run_id,
+        repeat_count=run.repeat_count,
         status=run.status,
         total_tests=run.total_tests,
         passed_tests=run.passed_tests,
@@ -190,16 +234,13 @@ def set_run_baseline(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Designate a run as baseline or configure explicit baseline comparison (Requirement 12).
-    """
+    """Designate a run as baseline or configure explicit baseline comparison."""
     run = _check_run_ownership(run_id, current_user, db)
     project = db.query(Project).filter(Project.id == run.project_id).first()
 
     target_baseline_id = payload.baseline_run_id if payload else None
 
     if target_baseline_id is not None:
-        # Validate target baseline
         base_run = (
             db.query(Run)
             .filter(
@@ -220,10 +261,8 @@ def set_run_baseline(
             project.baseline_run_id = target_baseline_id
         db.commit()
 
-        # Re-compute regression analysis against selected baseline
         apply_regression_analysis_to_run(db, run.id, explicit_baseline_id=target_baseline_id)
     else:
-        # If no explicit baseline_run_id is passed, designate this run as the project's baseline
         if run.status != "completed":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -233,7 +272,6 @@ def set_run_baseline(
             project.baseline_run_id = run.id
             db.commit()
 
-        # Re-evaluate this run's regressions if applicable
         if run.status == "completed":
             apply_regression_analysis_to_run(db, run.id)
 
@@ -246,6 +284,7 @@ def set_run_baseline(
         project_id=run.project_id,
         prompt_version_id=run.prompt_version_id,
         baseline_run_id=run.baseline_run_id,
+        repeat_count=run.repeat_count,
         status=run.status,
         total_tests=run.total_tests,
         passed_tests=run.passed_tests,
@@ -281,7 +320,7 @@ async def cancel_run(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Cancel an active or queued run (Requirement 14)."""
+    """Cancel an active or queued run."""
     run = _check_run_ownership(run_id, current_user, db)
     if run.status in ("completed", "failed", "cancelled"):
         return RunOut.model_validate(run)
@@ -291,7 +330,6 @@ async def cancel_run(
     db.commit()
     db.refresh(run)
 
-    # Mark remaining pending results as cancelled
     pending_results = (
         db.query(RunResult).filter(RunResult.run_id == run.id, RunResult.status == "pending").all()
     )
@@ -309,22 +347,84 @@ async def cancel_run(
     return RunOut.model_validate(run)
 
 
-@router.get("/api/runs/{run_id}/stream")
-async def stream_run_events(
+@router.post("/api/runs/{run_id}/stream-token")
+def get_run_stream_token(
     run_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Stream evaluation progress via Server-Sent Events (SSE) (Requirement 16).
+    Generate a short-lived (60s), scoped token for SSE streaming.
+    Prevents long-lived authentication tokens from appearing in query strings or access logs.
     """
     _check_run_ownership(run_id, current_user, db)
+    token = create_stream_token(user_id=current_user.id, run_id=run_id, expires_seconds=60)
+    return {"stream_token": token, "expires_in": 60}
+
+
+@router.get("/api/runs/{run_id}/stream")
+async def stream_run_events(
+    run_id: int,
+    request: Request,
+    stream_token: str | None = Query(None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_scheme),
+    db: Session = Depends(get_db),
+):
+    """
+    Stream evaluation progress via Server-Sent Events (SSE).
+    Authenticates via:
+    1. Short-lived scoped stream token (?stream_token=...)
+    2. Bearer authorization header
+    3. Secure HttpOnly cookie
+    """
+    user_id: int | None = None
+
+    if stream_token:
+        try:
+            payload = decode_stream_token(stream_token)
+            if payload.get("run_id") != run_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Stream token does not match this run ID",
+                )
+            user_id = int(payload["sub"])
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired stream token",
+            )
+    else:
+        # Standard token from header or cookie
+        token = None
+        if credentials and credentials.credentials:
+            token = credentials.credentials
+        elif "promptcheck_access_token" in request.cookies:
+            token = request.cookies.get("promptcheck_access_token")
+
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required for SSE stream",
+            )
+        try:
+            payload = decode_access_token(token)
+            user_id = int(payload["sub"])
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired authentication token",
+            )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    _check_run_ownership(run_id, user, db)
 
     queue = await broadcaster.subscribe(run_id)
 
     async def event_generator():
         try:
-            # Yield initial connection confirmation event
             yield broadcaster.format_sse(
                 "connected", {"run_id": run_id, "time": str(datetime.now(UTC))}
             )

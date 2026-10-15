@@ -1,8 +1,33 @@
 import json
+import math
 from typing import Any
+
+from pydantic import BaseModel, Field, StrictBool, ValidationError, field_validator
 
 from app.engine.client import BaseGeminiClient
 from app.evaluators.base import BaseEvaluator, EvaluationContext, EvaluationResult
+
+
+class StrictJudgeOutput(BaseModel):
+    passed: StrictBool
+    score: float = Field(ge=0.0, le=1.0)
+    reason: str = Field(min_length=1)
+    details: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def validate_numeric_finite_score(cls, v: Any) -> float:
+        if isinstance(v, bool):
+            raise ValueError("score cannot be a boolean")
+        try:
+            val = float(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"score must be numeric, got {v}") from exc
+        if math.isnan(val) or math.isinf(val):
+            raise ValueError("score cannot be NaN or infinity")
+        if not (0.0 <= val <= 1.0):
+            raise ValueError(f"score must be within [0.0, 1.0], got {val}")
+        return val
 
 
 def parse_judge_json(raw_text: str) -> dict[str, Any]:
@@ -73,7 +98,7 @@ Output ONLY a single valid JSON object with NO surrounding markdown codeblocks o
 class LLMJudgeEvaluator(BaseEvaluator):
     """
     Evaluates candidate text using an LLM-as-a-judge with temperature 0,
-    strict JSON output, rubric-specific evaluation, delimiters, and 1-time retry on malformed JSON.
+    strict schema validation, rubric-specific evaluation, delimiters, and 1-time retry on malformed JSON.
     """
 
     evaluator_type: str = "llm_judge"
@@ -130,59 +155,55 @@ class LLMJudgeEvaluator(BaseEvaluator):
                 details={"error": str(exc), "model": model},
             )
 
-        # 2. Parse JSON output with 1-time retry on malformed JSON
-        parsed: dict[str, Any] | None = None
+        # 2. Parse and strictly validate JSON output with 1-time retry
+        judge_output: StrictJudgeOutput | None = None
         retried = False
 
         try:
-            parsed = parse_judge_json(raw_text)
-        except Exception as first_parse_err:
+            parsed_dict = parse_judge_json(raw_text)
+            judge_output = StrictJudgeOutput.model_validate(parsed_dict)
+        except (ValueError, ValidationError) as first_err:
             retried = True
             retry_prompt = (
-                f"Your previous response was not valid JSON ({first_parse_err}).\n"
+                f"Your previous response was invalid ({first_err}).\n"
                 "Please output ONLY the raw JSON object conforming strictly to:\n"
-                '{"passed": <boolean>, "score": <float 0.0-1.0>, "reason": "<string>", "details": {}}\n\n'
+                '{"passed": <boolean true or false>, "score": <float 0.0-1.0>, "reason": "<string>", "details": {}}\n\n'
                 f"Previous output:\n{raw_text[:400]}"
             )
             try:
                 retry_response = await client.generate_content(
                     retry_prompt, model=model, temperature=0.0
                 )
-                parsed = parse_judge_json(retry_response.text)
-            except Exception as second_parse_err:
+                retry_dict = parse_judge_json(retry_response.text)
+                judge_output = StrictJudgeOutput.model_validate(retry_dict)
+            except Exception as second_err:
                 return EvaluationResult(
                     type=self.evaluator_type,
                     passed=False,
                     score=0.0,
-                    reason=f"LLM judge failed to return valid JSON after retry: {second_parse_err}",
+                    reason=f"LLM judge failed strict validation after retry: {second_err}",
                     details={
-                        "initial_error": str(first_parse_err),
-                        "retry_error": str(second_parse_err),
+                        "initial_error": str(first_err),
+                        "retry_error": str(second_err),
                         "raw_output": raw_text[:200],
                         "retried": True,
                         "model": model,
                     },
                 )
 
-        passed_val = bool(parsed.get("passed", False))
-        score_val = float(parsed.get("score", 1.0 if passed_val else 0.0))
-        reason_val = str(parsed.get("reason", "Evaluated by LLM judge."))
-        details_val = parsed.get("details", {})
-        if not isinstance(details_val, dict):
-            details_val = {"raw_details": details_val}
-
+        details_val = judge_output.details.copy()
         details_val["judge_model"] = model
         details_val["rubric"] = rubric
         details_val["retried"] = retried
         details_val["threshold"] = threshold
 
         # Passed is True if judge marked passed AND score >= threshold
-        passed = passed_val and (score_val >= threshold)
+        passed = judge_output.passed and (judge_output.score >= threshold)
 
         return EvaluationResult(
             type=self.evaluator_type,
             passed=passed,
-            score=round(score_val, 3),
-            reason=reason_val,
+            score=round(judge_output.score, 3),
+            reason=judge_output.reason,
             details=details_val,
         )

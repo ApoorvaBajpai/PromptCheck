@@ -1,9 +1,16 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_user_project
 from app.core.security import decrypt_api_key, encrypt_api_key, mask_api_key
 from app.database import get_db
+from app.engine.client import (
+    BaseGeminiClient,
+    GeminiAuthError,
+    GeminiClient,
+    GeminiRateLimitError,
+    GeminiServerError,
+)
 from app.models.project import Project
 from app.models.user import User
 from app.schemas.project import (
@@ -15,6 +22,11 @@ from app.schemas.project import (
 )
 
 router = APIRouter(prefix="/api/projects", tags=["Projects"])
+
+
+def get_gemini_client_for_key(api_key: str) -> BaseGeminiClient:
+    """Dependency hook to instantiate a GeminiClient, overrideable in tests."""
+    return GeminiClient(api_key=api_key)
 
 
 def _to_project_out(project: Project) -> ProjectOut:
@@ -40,16 +52,62 @@ def _to_project_out(project: Project) -> ProjectOut:
     )
 
 
+async def _validate_and_encrypt_key(plain_key: str) -> tuple[str, str | None]:
+    """
+    Validate Gemini key with a minimal probe request and encrypt it.
+    Returns (encrypted_key, warning_message).
+    Distinguishes invalid keys from quota exhaustion and transient errors.
+    """
+    clean_key = plain_key.strip()
+    if not clean_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Gemini API key cannot be empty",
+        )
+
+    client = get_gemini_client_for_key(clean_key)
+    warning: str | None = None
+
+    try:
+        await client.validate_key()
+    except GeminiAuthError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Gemini API key: authentication failed. Please verify your API key.",
+        )
+    except GeminiRateLimitError as rle:
+        # Key is valid but quota exceeded. We do NOT treat quota exhaustion as an invalid API key.
+        warning = f"Gemini API quota notice: {rle}. API key has been saved."
+    except GeminiServerError as se:
+        if se.status_code == 504:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Timeout connecting to Gemini API during validation. Please try again.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Gemini service unavailable during key validation. Please try again later.",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Key validation error: {exc}",
+        )
+
+    encrypted = encrypt_api_key(clean_key)
+    return encrypted, warning
+
+
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
-def create_project(
+async def create_project(
     project_in: ProjectCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Create a new project owned by current user."""
     encrypted_key = None
-    if project_in.gemini_api_key:
-        encrypted_key = encrypt_api_key(project_in.gemini_api_key)
+    if project_in.gemini_api_key and project_in.gemini_api_key.strip():
+        encrypted_key, _ = await _validate_and_encrypt_key(project_in.gemini_api_key)
 
     project = Project(
         user_id=current_user.id,
@@ -87,7 +145,7 @@ def get_project(
 
 
 @router.put("/{project_id}", response_model=ProjectOut)
-def update_project(
+async def update_project(
     project_update: ProjectUpdate,
     project: Project = Depends(get_user_project),
     db: Session = Depends(get_db),
@@ -99,9 +157,8 @@ def update_project(
         project.description = project_update.description
     if project_update.gemini_api_key is not None:
         if project_update.gemini_api_key.strip():
-            project.encrypted_gemini_api_key = encrypt_api_key(
-                project_update.gemini_api_key.strip()
-            )
+            encrypted, _ = await _validate_and_encrypt_key(project_update.gemini_api_key)
+            project.encrypted_gemini_api_key = encrypted
         else:
             project.encrypted_gemini_api_key = None
 
@@ -122,18 +179,25 @@ def delete_project(
 
 
 @router.post("/{project_id}/api-key", response_model=ProjectApiKeyOut)
-def set_project_api_key(
+@router.put("/{project_id}/api-key", response_model=ProjectApiKeyOut)
+async def set_project_api_key(
     payload: ProjectApiKeyIn,
     project: Project = Depends(get_user_project),
     db: Session = Depends(get_db),
 ):
-    """Set and encrypt Gemini API key at rest (Invariant 5 & 6)."""
-    project.encrypted_gemini_api_key = encrypt_api_key(payload.api_key)
+    """
+    Validate, encrypt, and store Gemini API key at rest (Invariant 5 & 6).
+    Validates key against minimal Gemini probe request before persisting.
+    """
+    encrypted_key, warning = await _validate_and_encrypt_key(payload.api_key)
+    project.encrypted_gemini_api_key = encrypted_key
     db.commit()
     db.refresh(project)
+
     return ProjectApiKeyOut(
         has_key=True,
-        masked_key=mask_api_key(payload.api_key),
+        masked_key=mask_api_key(payload.api_key.strip()),
+        warning=warning,
     )
 
 

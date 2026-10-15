@@ -28,6 +28,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       DEBUG: ${DEBUG:-True}
       SECRET_KEY: ${SECRET_KEY:-promptcheck-secret}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-t8ugVmp3vGlAT11bNiEaJELvyj-1f8qZkaQTDH1Au0E=}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
@@ -41,7 +42,9 @@ services:
     container_name: promptcheck-frontend
     restart: always
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      BACKEND_INTERNAL_URL: http://backend:8000
+      INTERNAL_API_URL: http://backend:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "${PORT:-3000}:3000"
     depends_on:
