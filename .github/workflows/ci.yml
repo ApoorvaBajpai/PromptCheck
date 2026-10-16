@@ -161,14 +161,25 @@ jobs:
       - name: Verify Frontend to Backend proxy routing
         run: |
           # Next.js rewrites /api/* to BACKEND_INTERNAL_URL (http://backend:8000/api/*)
-          response=$(curl -f -s http://localhost:3000/api/healthz)
-          echo "Proxy health check response: $response"
-          echo "$response" | grep -q "healthy"
+          for i in $(seq 1 15); do
+            echo "Checking proxy routing (attempt $i/15)..."
+            response=$(curl -s -S http://localhost:3000/api/healthz || true)
+            echo "Proxy response: $response"
+            if echo "$response" | grep -q "healthy"; then
+              echo "Proxy routing verified successfully!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Proxy routing verification failed after 30s!"
+          docker compose logs frontend
+          docker compose logs backend
+          exit 1
 
       - name: Smoke test API endpoint
         run: |
-          curl -f -s http://localhost:8000/ | grep -q "PromptCheck"
-          curl -f -s http://localhost:8000/docs > /dev/null
+          curl -f -s -S http://localhost:8000/ | grep -q "PromptCheck"
+          curl -f -s -S http://localhost:8000/docs > /dev/null
 
       - name: Clean shutdown
         if: always()

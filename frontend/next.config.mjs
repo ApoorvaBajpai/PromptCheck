@@ -2,7 +2,7 @@
 const backendInternalUrl =
   process.env.BACKEND_INTERNAL_URL ||
   process.env.INTERNAL_API_URL ||
-  "http://127.0.0.1:8000";
+  (process.env.NODE_ENV === "production" ? "http://backend:8000" : "http://127.0.0.1:8000");
 
 const nextConfig = {
   reactStrictMode: true,
