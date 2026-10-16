@@ -20,11 +20,15 @@ from app.engine.worker import worker_instance
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start durable background queue worker
-    worker_instance.start()
+    # Startup: Start durable background queue worker (skip in serverless environments)
+    import os
+
+    if not os.environ.get("VERCEL"):
+        worker_instance.start()
     yield
     # Shutdown: Cleanly terminate worker tasks
-    await worker_instance.stop()
+    if not os.environ.get("VERCEL"):
+        await worker_instance.stop()
 
 
 app = FastAPI(
